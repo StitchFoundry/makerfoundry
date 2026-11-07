@@ -3643,6 +3643,25 @@ async fn designs_are_found_by_the_hoop_they_fit_and_the_material_they_cut() {
     // nonsense is ignored
     let all = s.get("/browse?hoop=99x99&material=gold", None).await.body;
     assert!(has(&all, boxed) && has(&all, rose));
+    // only the chosen kind's filters show (#110)
+    let laser = s.get("/browse?kind=laser", None).await.body;
+    assert!(laser.contains(r#"name="material""#) && !laser.contains(r#"name="hoop""#));
+    assert!(has(&laser, boxed) && !has(&laser, rose));
+    let emb = s.get("/browse?kind=embroidery", None).await.body;
+    assert!(emb.contains(r#"name="hoop""#) && !emb.contains(r#"name="material""#));
+    let both = s.get("/browse", None).await.body;
+    assert!(!both.contains(r#"name="hoop""#) && !both.contains(r#"name="material""#));
+    assert!(both.contains(r#"<a href="/browse?q=&amp;kind=laser"#));
+    // a filter from another kind is ignored, and the tab for the kind is marked
+    let ignored = s.get("/browse?kind=embroidery&material=acrylic", None).await.body;
+    assert!(has(&ignored, rose) && !has(&ignored, boxed));
+    let ignored = s.get("/browse?kind=laser&hoop=4x4", None).await.body;
+    assert!(has(&ignored, boxed) && !has(&ignored, rose));
+    assert!(ignored.contains(r#"kind=laser&amp;price=&amp;sort=newest" aria-current="page""#));
+    // 3D print is not a tab until models are open, and kind=3d is ignored until then
+    assert!(!both.contains("3D print"));
+    let three = s.get("/browse?kind=3d", None).await.body;
+    assert!(has(&three, boxed) && has(&three, rose));
 }
 
 #[tokio::test]
@@ -12879,4 +12898,94 @@ async fn the_home_page_is_a_marketplace_with_search_chips_and_shelves_of_cards()
         home.contains("Founding</span>") && home.contains(">Free</span>"),
         "{home}"
     );
+}
+
+// ---------------------------------------------------------------- issue #109: founding emails
+
+#[tokio::test]
+async fn founding_applications_email_the_admins_and_the_applicant_hears_back() {
+    let Some((s, _st, _seller, _id, _state, sent)) = disputes_site().await else {
+        return;
+    };
+    let mails = || -> Vec<(String, String, String)> {
+        sent.lock()
+            .unwrap()
+            .iter()
+            .map(|v| {
+                let m = &v["mailpit"];
+                (
+                    m["To"][0]["Email"].as_str().unwrap().to_string(),
+                    m["Subject"].as_str().unwrap().to_string(),
+                    m["Text"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+    let _bea = s.sign_up("bea%40example.com").await; // 1001
+    let admin = s.sign_up("ada%40example.com").await; // 1002, the admin
+    let nick = s.sign_up("nick%40example.com").await; // 1003
+    // no application waiting: no link for the admin
+    assert!(!s.get("/account", Some(&admin)).await.body.contains("Founding: "));
+    let before = mails().len();
+    let r = s
+        .post(
+            "/founding",
+            "name=Nick+Prints&work_url=https%3A%2F%2Fmakerworld.com%2Fen%2F%40nick&about=Gridfinity+bins",
+            Some(&nick),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER, "{}", r.body);
+    // one email, to the admin, with the name, link and what they make, and no address of Nick's
+    let got = mails();
+    assert_eq!(got.len(), before + 1, "{got:?}");
+    let (to, subject, text) = got.last().unwrap();
+    assert_eq!(to, "ada@example.com");
+    assert!(subject.contains("Nick Prints"), "{subject}");
+    assert!(
+        text.contains("New founding creator application: Nick Prints (https://makerworld.com/en/@nick)")
+            && text.contains("Gridfinity bins")
+            && text.contains("Review: https://makerfoundry.test/admin/founding"),
+        "{text}"
+    );
+    assert!(!text.contains("nick@example.com") && !subject.contains("nick@example.com"));
+    // a refused form sends nothing
+    s.post("/founding", "name=&about=x", Some(&nick)).await;
+    assert_eq!(mails().len(), before + 1);
+    // the link shows for the admin only, with the count; and from the overview
+    let account = s.get("/account", Some(&admin)).await.body;
+    assert!(
+        account.contains(r#"<a href="/admin/founding">Founding: 1 waiting</a>"#),
+        "{account}"
+    );
+    assert!(!s.get("/account", Some(&nick)).await.body.contains("Founding: "));
+    assert!(
+        s.get("/admin/overview", Some(&admin))
+            .await
+            .body
+            .contains(r#"href="/admin/founding""#)
+    );
+    // approving tells the applicant, once
+    s.post("/admin/founding/1003/approve", "", Some(&admin)).await;
+    s.post("/admin/founding/1003/approve", "", Some(&admin)).await;
+    let got = mails();
+    assert_eq!(got.len(), before + 2, "{got:?}");
+    let (to, subject, text) = got.last().unwrap();
+    assert_eq!(to, "nick@example.com");
+    assert!(
+        subject.contains("Founding creator #1") && text.contains("Founding creator #1"),
+        "{subject} {text}"
+    );
+    assert!(!s.get("/account", Some(&admin)).await.body.contains("Founding: "));
+    // declining tells the applicant, kindly
+    s.post("/founding", "name=Cy&about=Laser", Some(&_bea)).await;
+    let n = mails().len();
+    s.post("/admin/founding/1001/decline", "", Some(&admin)).await;
+    let got = mails();
+    assert_eq!(got.len(), n + 1, "{got:?}");
+    let (to, _subject, text) = got.last().unwrap();
+    assert_eq!(to, "bea@example.com");
+    assert!(text.contains("Thank you for applying"), "{text}");
+    // removing a badge sends nothing
+    s.post("/admin/founding/1003/remove", "", Some(&admin)).await;
+    assert_eq!(mails().len(), n + 1);
 }

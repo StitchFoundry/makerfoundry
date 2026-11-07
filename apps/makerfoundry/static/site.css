@@ -65,7 +65,7 @@ main { flex: 1; }
 .kinds { display: grid; gap: 1rem; padding-bottom: 3rem; grid-template-columns: 1fr; }
 @media (min-width: 40rem) { .kinds { grid-template-columns: repeat(2, 1fr); } }
 @media (min-width: 62rem) { .kinds { grid-template-columns: repeat(4, 1fr); } }
-.kinds article {
+.kind-tabs article {
   background: var(--card); border: 1px solid var(--line); border-radius: .75rem; padding: 1.25rem;
 }
 .kinds h2 { margin: 0 0 .5rem; font-size: 1.15rem; }

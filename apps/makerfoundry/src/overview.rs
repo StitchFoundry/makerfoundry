@@ -190,7 +190,7 @@ pub async fn overview(State(state): State<AppState>, headers: HeaderMap) -> Resp
     private(
         "Overview · MakerFoundry",
         &format!(
-            r#"<section class="design"><h1>Overview</h1><p class="muted"><a href="/admin">Reports</a> · <a href="/admin/orders">Orders</a> · <a href="/admin/apps">Designs from apps</a> · <a href="/admin/accounts">Delete an account's data</a></p>{people}{designs}{sales}{reports}</section>"#
+            r#"<section class="design"><h1>Overview</h1><p class="muted"><a href="/admin">Reports</a> · <a href="/admin/orders">Orders</a> · <a href="/admin/founding">Founding creators</a> · <a href="/admin/apps">Designs from apps</a> · <a href="/admin/accounts">Delete an account's data</a></p>{people}{designs}{sales}{reports}</section>"#
         ),
         true,
     )
