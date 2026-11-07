@@ -12646,6 +12646,50 @@ async fn deleting_a_design_closes_its_checkouts_first() {
     assert_eq!(posts, 1, "an expired session isn't expired again");
 }
 
+/// Issue #105: a buyer pressing Buy again never ends up paying twice. An earlier checkout still
+/// open is closed at Stripe first; one already paid (not yet confirmed here, or a bank debit on
+/// its way) stops a second.
+#[tokio::test]
+async fn buying_again_closes_the_earlier_checkout_and_never_charges_twice() {
+    let Some((s, st, _seller, id)) = selling_site(Vec::new()).await else {
+        return;
+    };
+    let bea = s.sign_up("bea%40example.com").await;
+    let cal = s.sign_up("cal%40example.com").await;
+    // cal's open checkout is someone else's: left alone
+    s.post(&format!("/d/{id}/buy"), "", Some(&cal)).await;
+    let r = s.post(&format!("/d/{id}/buy"), "", Some(&bea)).await;
+    assert!(r.location().ends_with("cs_test_2"), "{}", r.location());
+    // bea presses Buy again (another tab): the first checkout can't be paid any more
+    let r = s.post(&format!("/d/{id}/buy"), "", Some(&bea)).await;
+    assert!(r.location().ends_with("cs_test_3"), "{}", r.location());
+    assert_eq!(st.lock().unwrap().expired, ["cs_test_2"]);
+    assert_eq!(
+        s.scalar("SELECT count(*) FROM mf_orders WHERE stripe_session = 'cs_test_2' AND status = 'expired'")
+            .await,
+        1
+    );
+    // she pays the second, and it isn't confirmed here yet (or the order was expired here while a
+    // bank debit is on its way): no third checkout
+    st.lock().unwrap().sessions.get_mut("cs_test_3").unwrap().1 = true;
+    sqlx::query("UPDATE mf_orders SET status = 'expired' WHERE stripe_session = 'cs_test_3'")
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    let r = s.post(&format!("/d/{id}/buy"), "", Some(&bea)).await;
+    assert!(r.body.contains("still being confirmed"), "{}", r.body);
+    assert_eq!(
+        s.scalar("SELECT count(*) FROM mf_orders WHERE buyer_account = (SELECT buyer_account FROM mf_orders WHERE stripe_session = 'cs_test_3')")
+            .await,
+        2
+    );
+    // Stripe can't be asked: no checkout made blind
+    st.lock().unwrap().sessions_unreadable = true;
+    let r = s.post(&format!("/d/{id}/buy"), "", Some(&bea)).await;
+    assert!(r.body.contains("try again"), "{}", r.body);
+    assert_eq!(st.lock().unwrap().sessions.len(), 3);
+}
+
 #[tokio::test]
 async fn deleting_your_data_closes_checkouts_for_your_designs() {
     let Some((s, st, seller, id)) = selling_site(Vec::new()).await else {

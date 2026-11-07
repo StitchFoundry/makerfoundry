@@ -147,14 +147,33 @@ fn now_secs() -> i64 {
 pub async fn close_checkouts(state: &AppState, pool: &PgPool, design: i64) -> Result<(), &'static str> {
     const LATER: &str = "Someone is buying this design and Stripe can't be reached just now to stop it. Please try again in a few minutes.";
     const PAYING: &str = "Someone has paid for this design and the payment is still being confirmed. It can be deleted once that's done; if it's confirmed, it's kept for their download.";
+    close_open(state, pool, design, None).await.map_err(|e| match e {
+        Closing::Later => LATER,
+        Closing::Paying => PAYING,
+    })
+}
+
+/// Why open checkouts couldn't all be closed.
+enum Closing {
+    /// Stripe (or the database) can't be asked just now.
+    Later,
+    /// One is paid at Stripe, or a delayed payment is on its way, and not yet confirmed here.
+    Paying,
+}
+
+/// Every checkout for design `design` that could still be paid (only `buyer`'s, when given) is
+/// closed at Stripe, and its order with it (`close_checkouts`).
+async fn close_open(state: &AppState, pool: &PgPool, design: i64, buyer: Option<i64>) -> Result<(), Closing> {
+    const LATER: Closing = Closing::Later;
     // (a bank debit can take a couple of weeks to succeed; older checkouts can't be paid)
     let open: Vec<(i64, String)> = sqlx::query_as(
         "SELECT id, stripe_session FROM mf_orders
          WHERE design_id = $1 AND status IN ('pending', 'expired') AND stripe_session IS NOT NULL
-           AND created_at > now() - interval '30 days'
+           AND created_at > now() - interval '30 days' AND ($2::bigint IS NULL OR buyer_account = $2)
          ORDER BY id LIMIT 100",
     )
     .bind(design)
+    .bind(buyer)
     .fetch_all(pool)
     .await
     .map_err(|_| LATER)?;
@@ -187,7 +206,7 @@ pub async fn close_checkouts(state: &AppState, pool: &PgPool, design: i64) -> Re
             }
             Some("expired") => {}
             // complete: paid (not yet confirmed here) or a delayed payment on its way
-            _ => return Err(PAYING),
+            _ => return Err(Closing::Paying),
         }
         sqlx::query("UPDATE mf_orders SET status = 'expired' WHERE id = $1 AND status = 'pending'")
             .bind(order)
@@ -536,6 +555,22 @@ pub async fn buy(State(state): State<AppState>, headers: HeaderMap, Path(id): Pa
             "Buy a design",
             "You've started a lot of purchases in the last hour. Please wait a while and try again.",
         );
+    }
+    // an earlier checkout of theirs for it is closed first, so it's never paid twice (issue #105)
+    match close_open(&state, pool, id, Some(user.account_id)).await {
+        Ok(()) => {}
+        Err(Closing::Paying) => {
+            return problem_page(
+                "Buy a design",
+                "You've already paid for this design and the payment is still being confirmed. It will be in your library once it is.",
+            );
+        }
+        Err(Closing::Later) => {
+            return problem_page(
+                "Buy a design",
+                "Stripe can't be reached just now. Please try again in a few minutes.",
+            );
+        }
     }
     let (Some(parts), Some(s)) = (split(d.price_cents), seller(pool, d.account_id).await) else {
         return problem_page("Buy a design", "This design can't be bought just now.");
