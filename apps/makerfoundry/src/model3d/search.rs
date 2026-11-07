@@ -187,6 +187,7 @@ pub async fn find(pool: &PgPool, q: &Query) -> (Vec<Card>, Option<i64>) {
                 maker: r.try_get("maker").ok()?,
                 downloads: r.try_get("downloads").ok()?,
                 price: r.try_get("price_cents").ok()?,
+                founding: None,
             })
         })
         .collect();

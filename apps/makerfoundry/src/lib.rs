@@ -501,11 +501,15 @@ async fn favicon() -> Response {
 
 async fn home(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
     let signed_in = accounts::current_user(&state, &headers).await.is_some();
-    let newest = listings::newest(&state).await;
+    let sparse = listings::published_count(&state).await < listings::SPARSE;
+    let shelves = if sparse {
+        String::new()
+    } else {
+        listings::shelves(&state).await
+    };
     // picks of the week, and the galleries: what people made, and the most downloaded
     let picks = picks::home_html(&state).await;
     let made = picks::makes_html(&state).await;
-    let popular = listings::popular(&state).await;
     // Founding creators (MF-54): before the launch the home page leads with the invitation; after
     // it, a third button while spots are left.
     let left = founding::spots_left(&state).await;
@@ -538,6 +542,30 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Html<String>
             founding::SPOTS
         )
     };
+    let chips = {
+        let three = if state.three_d {
+            r#"<li><a href="/browse?kind=3d">3D print</a></li>"#
+        } else {
+            ""
+        };
+        format!(
+            r#"<nav aria-label="Kinds of design"><ul class="kind-tabs"><li><a href="/browse?kind=embroidery">Embroidery</a></li><li><a href="/browse?kind=laser">Laser</a></li>{three}</ul></nav>"#
+        )
+    };
+    // with few designs, the founding invitation (spots left, upload) instead of empty shelves
+    let shelves_or_invite = if sparse {
+        let spots = match left {
+            Some(n) => format!("{n} of {} spots left.", founding::SPOTS),
+            None => String::new(),
+        };
+        let upload = if signed_in { "/designs/new" } else { "/signup" };
+        format!(
+            r#"<section class="design shelf invite-shelf"><h2>Be one of the first {} founding creators</h2><p class="lead">MakerFoundry is just opening its shelves. Share your embroidery, laser or 3D designs here first and get a numbered Founding creator badge. <strong>{spots}</strong></p><p class="actions"><a class="button" href="{upload}">Upload a design</a> <a class="button secondary" href="/founding">Become a founding creator</a></p></section>"#,
+            founding::SPOTS
+        )
+    } else {
+        shelves
+    };
     // 3D models open with MakerFoundry 3D (MF-35, `MF_3D`); until then the card says they're coming.
     let three_d_soon = if state.three_d { "" } else { " 3D models open soon." };
     let home_url = format!("{}/", state.public_url);
@@ -556,6 +584,10 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Html<String>
   sold by the makers who made them.</p>
   {call}
 </section>
+{chips}
+{shelves_or_invite}
+{picks}
+{made}
 <section class="kinds">
   <article>
     <h2>Embroidery</h2>
@@ -577,11 +609,7 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Html<String>
     <p>Share a design for free, or sell it: you keep 90% of the price less the card fee, paid
     monthly, and your designs stay yours.</p>
   </article>
-</section>
-{picks}
-{newest}
-{made}
-{popular}"#
+</section>"#
         ),
         signed_in,
         Some(&preview),

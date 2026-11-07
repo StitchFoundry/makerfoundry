@@ -1240,7 +1240,13 @@ async fn a_free_design_is_published_found_and_downloaded() {
             && maker.body.contains("Hoops &amp; more")
             && maker.body.contains("Rose Bouquet")
     );
-    assert!(s.get("/", None).await.body.contains("Newest designs"));
+    // (a young site shows the founding invitation instead of shelves, see the home-page test)
+    assert!(
+        s.get("/", None)
+            .await
+            .body
+            .contains("Be one of the first 100 founding creators")
+    );
     // downloaded by anyone, counted, saved under its title
     let dl = s.get(&format!("/d/{id}/download"), None).await;
     assert_eq!(dl.status, StatusCode::SEE_OTHER);
@@ -12084,7 +12090,6 @@ async fn picks_of_the_week_and_the_galleries_on_the_home_page() {
         .unwrap()
         .to_string();
     assert!(picks.contains("Fern"), "kept for the week: {picks}");
-    assert!(home.contains("Most downloaded"), "{home}");
 
     // an admin picks Rose from its page; nobody else can
     assert!(
@@ -12845,6 +12850,53 @@ async fn copies_of_messages_to_shops_go_30_days_after_the_order_is_done() {
         s.scalar("SELECT count(*) FROM mf_hub_outbox WHERE id = 'earlier'")
             .await,
         0
+    );
+}
+
+// ---------------------------------------------------------------- issue #111: marketplace layout
+
+#[tokio::test]
+async fn the_home_page_is_a_marketplace_with_search_chips_and_shelves_of_cards() {
+    let Some(s) = site_with(vec![1000]).await else { return };
+    let admin = s.sign_up("ada%40example.com").await;
+    // a young site: search in the header, kind chips, and the founding invitation, no empty shelves
+    let home = s.get("/", None).await.body;
+    assert!(
+        home.contains(r#"<form class="hsearch" role="search" method="get" action="/browse">"#),
+        "{home}"
+    );
+    assert!(home.contains(r#"class="upload" href="/signup">Upload"#), "{home}");
+    assert!(home.contains(r#"href="/browse?kind=laser">Laser"#) && !home.contains("3D print</a>"));
+    assert!(home.contains("Be one of the first 100 founding creators") && home.contains("100 of 100 spots left"));
+    assert!(!home.contains("<h2>Newest</h2>") && !home.contains("<h2>Trending</h2>"));
+    s.dump_page("home-young", &home, None).await;
+    // the explainer cards stay lower on the page
+    assert!(home.find("Be one of the first").unwrap() < home.find("DST, PES, JEF").unwrap());
+    // search is on every page, and Upload goes to the new design page when signed in
+    let browse = s.get("/browse", Some(&admin)).await.body;
+    assert!(browse.contains(r#"role="search""#) && browse.contains(r#"class="upload" href="/designs/new""#));
+    // eight designs, one by a founding creator: shelves of cards appear
+    let mut ids = Vec::new();
+    for i in 0..8 {
+        ids.push(published(&s, &admin, "ada", &format!("Design+{i}")).await);
+    }
+    s.post("/founding", "name=Ada&about=Embroidery", Some(&admin)).await;
+    s.post("/admin/founding/1000/approve", "", Some(&admin)).await;
+    let home = s.get("/", None).await.body;
+    assert!(!home.contains("Be one of the first 100 founding creators"), "{home}");
+    for shelf in [
+        "<h2>Trending</h2>",
+        "<h2>Newest</h2>",
+        "<h2>Free to download</h2>",
+        "<h2>From founding creators</h2>",
+    ] {
+        assert!(home.contains(shelf), "{shelf}");
+    }
+    s.dump_page("home-shelves", &home, None).await;
+    // a card: a title as the picture's alt text, the maker with the founding badge, Free
+    assert!(
+        home.contains("Founding</span>") && home.contains(">Free</span>"),
+        "{home}"
     );
 }
 
