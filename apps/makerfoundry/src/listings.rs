@@ -557,7 +557,7 @@ fn kind_tabs(current: &str, three_d: bool, words: &str, price: &str, popular: bo
             )
         })
         .collect();
-    format!(r#"<nav aria-label="Kind of design"><ul class="kinds">{items}</ul></nav>"#)
+    format!(r#"<nav aria-label="Kind of design"><ul class="kind-tabs">{items}</ul></nav>"#)
 }
 
 /// `text` for a URL's query.
