@@ -1,5 +1,6 @@
 # Progress
 
+- 2026-11-07 #115 (first slice): `/browse` is a marketplace page: filters in a left panel (folds on a phone), a result count, four orders (Trending, Newest, Most downloaded, Most saved) and Load more into the same grid; tests that the newest design leads Browse and the home shelf at once. Trending is still most saved until the 7-day window (card slice). Left: design page, maker page, likes, 7-day trending.
 - 2026-11-07 nightly sweep: CI green (DB tests included), cargo audit clean; filed #105 (S1 double charge on a second Buy) and #106 (S2 shop-order Dashboard refunds).
 - Fixed #105: Buy closes the buyer's earlier open checkout at Stripe and refuses while an earlier payment is still being confirmed.
 - 2026-11-02 nightly maintenance: queue empty; `cargo xtask ci` green and stable over 3 test runs.

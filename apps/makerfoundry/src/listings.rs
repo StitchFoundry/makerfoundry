@@ -149,14 +149,8 @@ pub struct Card {
     pub founding: Option<i32>,
 }
 
-pub async fn find(pool: &PgPool, f: &Filter, limit: i64) -> Vec<Card> {
-    let rows = sqlx::query(
-        "SELECT d.id, d.title, d.kind, d.format, d.downloads, d.price_cents, m.name AS maker,
-                (SELECT p.id FROM mf_design_photos p WHERE p.design_id = d.id ORDER BY p.position LIMIT 1) AS photo,
-                (SELECT f.id FROM mf_model_files f WHERE f.design_id = d.id AND f.thumb_key IS NOT NULL ORDER BY f.position LIMIT 1) AS model_file,
-                (SELECT w.number FROM mf_founding w WHERE w.account_id = d.account_id AND w.status = 'approved') AS founding
-         FROM mf_designs d JOIN mf_makers m ON m.account_id = d.account_id
-         WHERE d.status = 'published'
+/// The conditions of a search, shared by `find` and `count` so the two always agree.
+const FIND_WHERE: &str = "WHERE d.status = 'published'
            AND (d.kind <> 'model3d' OR $15)
            AND (NOT $16 OR EXISTS (SELECT 1 FROM mf_founding w WHERE w.account_id = d.account_id AND w.status = 'approved'))
            AND ($1::text IS NULL OR d.kind = $1)
@@ -168,32 +162,43 @@ pub async fn find(pool: &PgPool, f: &Filter, limit: i64) -> Vec<Card> {
                 AND ((d.width_mm <= $9 AND d.height_mm <= $10) OR (d.width_mm <= $10 AND d.height_mm <= $9))))
            AND ($11::text IS NULL OR (d.kind = 'laser' AND d.material = $11))
            AND ($12::bigint IS NULL OR d.id IN (SELECT design_id FROM mf_collection_items WHERE collection_id = $12))
-           AND ($14::bigint IS NULL OR d.account_id IN (SELECT maker_account FROM mf_follows WHERE follower_account = $14))
+           AND ($14::bigint IS NULL OR d.account_id IN (SELECT maker_account FROM mf_follows WHERE follower_account = $14))";
+
+pub async fn find(pool: &PgPool, f: &Filter, limit: i64) -> Vec<Card> {
+    let sql = format!(
+        "SELECT d.id, d.title, d.kind, d.format, d.downloads, d.price_cents, m.name AS maker,
+                (SELECT p.id FROM mf_design_photos p WHERE p.design_id = d.id ORDER BY p.position LIMIT 1) AS photo,
+                (SELECT f.id FROM mf_model_files f WHERE f.design_id = d.id AND f.thumb_key IS NOT NULL ORDER BY f.position LIMIT 1) AS model_file,
+                (SELECT w.number FROM mf_founding w WHERE w.account_id = d.account_id AND w.status = 'approved') AS founding
+         FROM mf_designs d JOIN mf_makers m ON m.account_id = d.account_id
+         {WHERE}
          ORDER BY CASE WHEN $13 THEN (SELECT count(DISTINCT c.account_id) FROM mf_collection_items i
                                       JOIN mf_collections c ON c.id = i.collection_id WHERE i.design_id = d.id) END DESC NULLS LAST,
                   CASE WHEN $5 THEN d.downloads END DESC NULLS LAST,
                   CASE WHEN $3::text IS NOT NULL AND NOT $5 THEN ts_rank(d.search, websearch_to_tsquery('english', $3)) END DESC NULLS LAST,
                   d.published_at DESC
          LIMIT $6 OFFSET $7",
-    )
-    .bind(&f.kind)
-    .bind(&f.tag)
-    .bind(&f.words)
-    .bind(f.account)
-    .bind(f.popular)
-    .bind(limit)
-    .bind(f.page.max(0).saturating_mul(limit))
-    .bind(f.free)
-    .bind(f.hoop.map(|h| h.width_mm))
-    .bind(f.hoop.map(|h| h.height_mm))
-    .bind(&f.material)
-    .bind(f.collection)
-    .bind(f.most_saved)
-    .bind(f.followed_by)
-    .bind(f.three_d)
-    .bind(f.founding_only)
-    .fetch_all(pool)
-    .await;
+        WHERE = FIND_WHERE
+    );
+    let rows = sqlx::query(&sql)
+        .bind(&f.kind)
+        .bind(&f.tag)
+        .bind(&f.words)
+        .bind(f.account)
+        .bind(f.popular)
+        .bind(limit)
+        .bind(f.page.max(0).saturating_mul(limit))
+        .bind(f.free)
+        .bind(f.hoop.map(|h| h.width_mm))
+        .bind(f.hoop.map(|h| h.height_mm))
+        .bind(&f.material)
+        .bind(f.collection)
+        .bind(f.most_saved)
+        .bind(f.followed_by)
+        .bind(f.three_d)
+        .bind(f.founding_only)
+        .fetch_all(pool)
+        .await;
     match rows {
         Ok(rows) => rows
             .iter()
@@ -217,6 +222,34 @@ pub async fn find(pool: &PgPool, f: &Filter, limit: i64) -> Vec<Card> {
             Vec::new()
         }
     }
+}
+
+/// How many published designs match `f` (ignoring its page and order).
+pub async fn count(pool: &PgPool, f: &Filter) -> i64 {
+    let sql = format!(
+        "SELECT count(*) FROM mf_designs d JOIN mf_makers m ON m.account_id = d.account_id {FIND_WHERE}
+           AND ($5::bool IS NOT NULL AND $6::bigint IS NOT NULL AND $7::bigint IS NOT NULL AND $13::bool IS NOT NULL)"
+    );
+    sqlx::query_scalar(&sql)
+        .bind(&f.kind)
+        .bind(&f.tag)
+        .bind(&f.words)
+        .bind(f.account)
+        .bind(f.popular)
+        .bind(0_i64)
+        .bind(0_i64)
+        .bind(f.free)
+        .bind(f.hoop.map(|h| h.width_mm))
+        .bind(f.hoop.map(|h| h.height_mm))
+        .bind(&f.material)
+        .bind(f.collection)
+        .bind(f.most_saved)
+        .bind(f.followed_by)
+        .bind(f.three_d)
+        .bind(f.founding_only)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0)
 }
 
 fn kind_name(kind: &str) -> &'static str {
@@ -432,8 +465,18 @@ pub async fn browse(State(state): State<AppState>, headers: HeaderMap, Query(q):
         _ => None,
     };
     let tag = tidy_tags(&q.tag).into_iter().next();
+    // Trending is the most saved until the 7-day window lands (#115, later slice)
     let popular = q.sort == "popular";
-    let most_saved = q.sort == "saved";
+    let most_saved = q.sort == "saved" || q.sort == "trending";
+    let sort_name = if popular {
+        "popular"
+    } else if q.sort == "saved" {
+        "saved"
+    } else if q.sort == "trending" {
+        "trending"
+    } else {
+        "newest"
+    };
     let page_no = q.page.clamp(0, 1000);
     let free = match q.price.as_str() {
         "free" => Some(true),
@@ -463,20 +506,15 @@ pub async fn browse(State(state): State<AppState>, headers: HeaderMap, Query(q):
         None => "",
     };
     // the search as it stands, for links that change one part of it
-    let search = format!(
-        "q={q}&amp;kind={k}&amp;price={price}&amp;hoop={h}&amp;material={m}&amp;sort={s}",
+    let base = format!(
+        "q={q}&amp;kind={k}&amp;price={price}&amp;hoop={h}&amp;material={m}&amp;tag={t}",
         q = escape(&url_word(&words)),
         k = kind_param,
         h = hoop.map_or("", |h| h.id),
         m = escape(material.as_deref().unwrap_or("")),
-        s = if popular {
-            "popular"
-        } else if most_saved {
-            "saved"
-        } else {
-            "newest"
-        },
+        t = escape(&url_word(tag.as_deref().unwrap_or(""))),
     );
+    let search = format!("{base}&amp;sort={sort_name}");
     let filter = Filter {
         three_d: state.three_d,
         kind: kind.clone(),
@@ -491,17 +529,20 @@ pub async fn browse(State(state): State<AppState>, headers: HeaderMap, Query(q):
         collection: None,
         followed_by: None,
         founding_only: false,
-        page: page_no,
+        page: 0,
     };
-    let found = match state.db.as_ref() {
-        Some(pool) => find(pool, &filter, PAGE_SIZE).await,
-        None => Vec::new(),
+    // "Load more" asks for the same search with one more page; the grid shows all of it so far
+    let shown_limit = PAGE_SIZE.saturating_mul(page_no.saturating_add(1));
+    let (found, total) = match state.db.as_ref() {
+        Some(pool) => (find(pool, &filter, shown_limit).await, count(pool, &filter).await),
+        None => (Vec::new(), 0),
     };
     let selected = |on: bool| if on { " selected" } else { "" };
     let tag_note = match &tag {
         Some(t) => format!(
-            r#"<p>Tagged <strong>{t}</strong> · <a href="/browse?{search}">show all tags</a></p>"#,
+            r#"<p>Tagged <strong>{t}</strong> · <a href="/browse?{search_all}">show all tags</a></p>"#,
             t = escape(t),
+            search_all = search.replacen(&format!("&amp;tag={}", escape(&url_word(t))), "&amp;tag=", 1),
         ),
         None => String::new(),
     };
@@ -510,15 +551,34 @@ pub async fn browse(State(state): State<AppState>, headers: HeaderMap, Query(q):
     } else {
         cards_html(&found)
     };
-    let more = if found.len() as i64 == PAGE_SIZE {
+    let more = if (found.len() as i64) < total && page_no < 1000 {
         format!(
-            r#"<p><a href="/browse?{search}&amp;tag={t}&amp;page={n}">More designs</a></p>"#,
-            t = escape(&url_word(tag.as_deref().unwrap_or(""))),
+            r#"<p class="more"><a class="button secondary" href="/browse?{search}&amp;page={n}" rel="next">Load more designs</a></p>"#,
             n = page_no + 1,
         )
     } else {
         String::new()
     };
+    let count_line = match total {
+        0 => "No designs".to_string(),
+        1 => "1 design".to_string(),
+        n => format!("{n} designs"),
+    };
+    let sorts = [
+        ("trending", "Trending"),
+        ("newest", "Newest"),
+        ("popular", "Most downloaded"),
+        ("saved", "Most saved"),
+    ]
+    .iter()
+    .map(|(id, name)| {
+        let here = *id == sort_name;
+        format!(
+            r#"<li><a href="/browse?{base}&amp;sort={id}"{aria}>{name}</a></li>"#,
+            aria = if here { r#" aria-current="true""# } else { "" },
+        )
+    })
+    .collect::<String>();
     let hoops = HOOPS
         .iter()
         .map(|h| {
@@ -542,34 +602,43 @@ pub async fn browse(State(state): State<AppState>, headers: HeaderMap, Query(q):
     Html(page(
         "Browse designs · MakerFoundry",
         &format!(
-            r#"<section class="design">
+            r#"<section class="design browse">
 <h1>Browse designs</h1>
 {tabs}
+<div class="browse-layout">
+<details class="filters">
+<summary>Filters</summary>
 <form class="search" method="get" action="/browse">
-<input type="search" name="q" value="{words}" placeholder="Search designs" aria-label="Search designs" maxlength="200">
+<label class="field">Search<input type="search" name="q" value="{words}" placeholder="Search designs" maxlength="200"></label>
 <input type="hidden" name="kind" value="{kind_param}">
-<select name="price" aria-label="Price"><option value="">Free and paid</option><option value="free"{fr}>Free</option><option value="paid"{pd}>Paid</option></select>
+<label class="field">Price<select name="price"><option value="">Free and paid</option><option value="free"{fr}>Free</option><option value="paid"{pd}>Paid</option></select></label>
 {kind_filters}
-<select name="sort" aria-label="Order"><option value="newest">Newest</option><option value="popular"{p}>Most downloaded</option><option value="saved"{ms}>Most saved</option></select>
+<input type="hidden" name="sort" value="{sort_name}">
 <input type="hidden" name="tag" value="{tag}">
-<button type="submit">Search</button>
+<button type="submit">Show designs</button>
 </form>
+</details>
+<div class="results">
+<div class="results-bar">
+<p class="count" role="status">{count_line}</p>
+<nav aria-label="Order"><ul class="sorts">{sorts}</ul></nav>
+</div>
 {tag_note}{results}{more}
+</div>
+</div>
 </section>"#,
             words = escape(&words),
-            tabs = kind_tabs(kind_param, state.three_d, &words, price, popular, most_saved),
+            tabs = kind_tabs(kind_param, state.three_d, &words, price, sort_name),
             kind_param = kind_param,
             kind_filters = match kind.as_deref() {
                 Some("embroidery") => format!(
-                    r#"<select name="hoop" aria-label="Hoop"><option value="">Any hoop</option>{hoops}</select>"#
+                    r#"<label class="field">Hoop<select name="hoop"><option value="">Any hoop</option>{hoops}</select></label>"#
                 ),
                 Some("laser") => format!(
-                    r#"<select name="material" aria-label="Material"><option value="">Any material</option>{materials}</select>"#
+                    r#"<label class="field">Material<select name="material"><option value="">Any material</option>{materials}</select></label>"#
                 ),
                 _ => String::new(),
             },
-            p = selected(popular),
-            ms = selected(most_saved),
             fr = selected(free == Some(true)),
             pd = selected(free == Some(false)),
             tag = escape(tag.as_deref().unwrap_or("")),
@@ -581,14 +650,7 @@ pub async fn browse(State(state): State<AppState>, headers: HeaderMap, Query(q):
 
 /// The kind tabs on `/browse`: All, Embroidery, Laser, and 3D print once models are open. A
 /// tab keeps the words, price and order but drops the other kind's filters.
-fn kind_tabs(current: &str, three_d: bool, words: &str, price: &str, popular: bool, most_saved: bool) -> String {
-    let sort = if popular {
-        "popular"
-    } else if most_saved {
-        "saved"
-    } else {
-        "newest"
-    };
+fn kind_tabs(current: &str, three_d: bool, words: &str, price: &str, sort: &str) -> String {
     let mut tabs = vec![("", "All"), ("embroidery", "Embroidery"), ("laser", "Laser")];
     if three_d {
         tabs.push(("3d", "3D print"));

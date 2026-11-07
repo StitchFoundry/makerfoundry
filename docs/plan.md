@@ -41,7 +41,7 @@ users and small laser businesses (LightFoundry's), and the designers who sell to
   open-source file readers, used as a Rust dependency), with stitch count, size, colours and
   colour changes; laser files drawn from their paths, with their size. Uploaded files are checked
   as they're read: a file that doesn't read is refused.
-- **Browse and search**: by kind (embroidery / laser), tags, hoop size, newest, popular, free/paid.
+- **Browse and search**: by kind (embroidery / laser), tags, hoop size, newest, popular, free/paid. **Layout (#115, first slice 2026-11-07)**: filters left (folding on a phone), result count, orders Trending / Newest / Most downloaded / Most saved, Load more; design page, maker page, likes and a 7-day Trending are still to do.
 - **A design page**: previews, photos, details, the licence in plain words, download or buy.
 - **Seller pages**: a maker's designs; followers later.
 - **Paid designs** with Stripe Connect; a buyer's library; a seller's sales and payouts page.
