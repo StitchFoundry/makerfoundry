@@ -61,6 +61,95 @@ pub async fn badge_for(pool: &PgPool, account: i64) -> String {
     number(pool, account).await.map(badge).unwrap_or_default()
 }
 
+/// How many applications are waiting for an admin.
+pub async fn waiting(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM mf_founding WHERE status = 'waiting'")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0)
+}
+
+/// For an admin's account page: a "Founding: N waiting" link, when N > 0 (empty for anyone else).
+pub async fn waiting_link(state: &AppState, account: i64) -> String {
+    let Some(pool) = state.db.as_ref().filter(|_| state.admins.contains(&account)) else {
+        return String::new();
+    };
+    match waiting(pool).await {
+        0 => String::new(),
+        n => format!(r#"<p><a href="/admin/founding">Founding: {n} waiting</a></p>"#),
+    }
+}
+
+/// The email telling the admins of an application: only the name, link and what they make,
+/// never the applicant's email address.
+fn admin_mail(public_url: &str, name: &str, link: &str, about: &str) -> (String, String) {
+    let link = if link.is_empty() { "(no link)" } else { link };
+    (
+        format!("MakerFoundry: new founding creator application: {name}"),
+        format!(
+            "New founding creator application: {name} ({link}).\n\nWhat they make:\n{about}\n\nReview: {public_url}/admin/founding\n"
+        ),
+    )
+}
+
+/// Tells every admin of an application (skipped, with a log line, if mail isn't set up).
+async fn tell_admins(state: &AppState, pool: &PgPool, name: &str, link: &str, about: &str) {
+    let Some(notices) = state.notices.as_ref() else {
+        eprintln!("founding: no mail set up, admins not told of an application");
+        return;
+    };
+    let emails: Vec<String> = sqlx::query_scalar("SELECT email FROM mf_accounts WHERE account_id = ANY($1)")
+        .bind(&state.admins)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    let (subject, text) = admin_mail(&state.public_url, name, link, about);
+    for email in emails.iter().filter(|e| !e.trim().is_empty()) {
+        if let Err(e) = notices.send_about_order(email, &subject, &text).await {
+            eprintln!("founding: telling an admin: {e}");
+        }
+    }
+}
+
+/// Tells an applicant how it went: `number` is `Some` for an approval, `None` for a decline.
+/// A transactional email (not the digest).
+async fn tell_applicant(state: &AppState, pool: &PgPool, account: i64, number: Option<i32>) {
+    let Some(notices) = state.notices.as_ref() else {
+        return;
+    };
+    let row: Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT a.email, m.handle FROM mf_accounts a LEFT JOIN mf_makers m ON m.account_id = a.account_id
+         WHERE a.account_id = $1",
+    )
+    .bind(account)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    let Some((email, handle)) = row.filter(|(e, _)| !e.trim().is_empty()) else {
+        return;
+    };
+    let (subject, text) = match number {
+        Some(n) => {
+            let page = match handle {
+                Some(h) => format!("{}/makers/{h}", state.public_url),
+                None => format!("{}/account/maker (set up your maker profile so people see your badge)", state.public_url),
+            };
+            (
+                format!("MakerFoundry: you're Founding creator #{n}"),
+                format!("Welcome aboard! You're Founding creator #{n} on MakerFoundry.\n\nYour maker page: {page}\n\nThank you for being one of the first.\n"),
+            )
+        }
+        None => (
+            "MakerFoundry: about your founding creator application".to_string(),
+            "Thank you for applying to be a founding creator. This time it wasn't a yes, but you're still very welcome to share your designs on MakerFoundry.\n".to_string(),
+        ),
+    };
+    if let Err(e) = notices.send_about_order(&email, &subject, &text).await {
+        eprintln!("founding: telling an applicant: {e}");
+    }
+}
+
 /// One line as typed, tidied, or why it won't do.
 fn line(text: &str, what: &str, max: usize, required: bool) -> Result<String, String> {
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -241,7 +330,12 @@ pub async fn apply(State(state): State<AppState>, headers: HeaderMap, Form(f): F
             .execute(&pool)
             .await;
             match saved {
-                Ok(_) => return Redirect::to("/founding").into_response(),
+                Ok(done) => {
+                    if done.rows_affected() > 0 {
+                        tell_admins(&state, &pool, &name, &link, &about).await;
+                    }
+                    return Redirect::to("/founding").into_response();
+                }
                 Err(e) => {
                     eprintln!("founding: apply {}: {e}", user.account_id);
                     "Your application couldn't be sent just now. Please try again.".to_string()
@@ -350,10 +444,30 @@ pub async fn decide(
         Err(r) => return r,
     };
     let done = match action.as_str() {
-        "approve" => approve(&pool, account, admin.account_id).await,
-        "decline" => set_status(&pool, account, admin.account_id, "declined", "waiting").await,
-        "remove" => set_status(&pool, account, admin.account_id, "declined", "approved").await,
-        "reconsider" => set_status(&pool, account, admin.account_id, "waiting", "declined").await,
+        "approve" => match approve(&pool, account, admin.account_id).await {
+            Ok((note, number)) => {
+                if let Some(n) = number {
+                    tell_applicant(&state, &pool, account, Some(n)).await;
+                }
+                Ok(note)
+            }
+            Err(e) => Err(e),
+        },
+        "decline" => match set_status(&pool, account, admin.account_id, "declined", "waiting").await {
+            Ok(changed) => {
+                if changed {
+                    tell_applicant(&state, &pool, account, None).await;
+                }
+                Ok(String::new())
+            }
+            Err(e) => Err(e),
+        },
+        "remove" => set_status(&pool, account, admin.account_id, "declined", "approved")
+            .await
+            .map(|_| String::new()),
+        "reconsider" => set_status(&pool, account, admin.account_id, "waiting", "declined")
+            .await
+            .map(|_| String::new()),
         _ => Ok(String::new()),
     };
     let note = match done {
@@ -375,7 +489,7 @@ pub async fn decide(
 }
 
 /// Approves a waiting application with the lowest free number → a note if it couldn't be.
-async fn approve(pool: &PgPool, account: i64, admin: i64) -> Result<String, sqlx::Error> {
+async fn approve(pool: &PgPool, account: i64, admin: i64) -> Result<(String, Option<i32>), sqlx::Error> {
     let mut tx = pool.begin().await?;
     // one approval at a time, so two admins can't hand out the same number or go past SPOTS
     sqlx::query("LOCK TABLE mf_founding IN SHARE ROW EXCLUSIVE MODE")
@@ -389,7 +503,7 @@ async fn approve(pool: &PgPool, account: i64, admin: i64) -> Result<String, sqlx
     .fetch_optional(&mut *tx)
     .await?;
     let Some(n) = free else {
-        return Ok(format!("All {SPOTS} spots are taken."));
+        return Ok((format!("All {SPOTS} spots are taken."), None));
     };
     let changed = sqlx::query(
         "UPDATE mf_founding SET status = 'approved', number = $2, decided_at = now(), decided_by = $3
@@ -403,13 +517,14 @@ async fn approve(pool: &PgPool, account: i64, admin: i64) -> Result<String, sqlx
     .rows_affected();
     tx.commit().await?;
     Ok(if changed == 0 {
-        "That application isn't waiting any more.".to_string()
+        ("That application isn't waiting any more.".to_string(), None)
     } else {
-        String::new()
+        (String::new(), Some(n))
     })
 }
 
-async fn set_status(pool: &PgPool, account: i64, admin: i64, to: &str, from: &str) -> Result<String, sqlx::Error> {
+/// → whether an application was changed.
+async fn set_status(pool: &PgPool, account: i64, admin: i64, to: &str, from: &str) -> Result<bool, sqlx::Error> {
     sqlx::query(
         "UPDATE mf_founding SET status = $2, number = NULL, decided_at = now(), decided_by = $4
          WHERE account_id = $1 AND status = $3",
@@ -420,7 +535,7 @@ async fn set_status(pool: &PgPool, account: i64, admin: i64, to: &str, from: &st
     .bind(admin)
     .execute(pool)
     .await
-    .map(|_| String::new())
+    .map(|r| r.rows_affected() > 0)
 }
 
 #[cfg(test)]

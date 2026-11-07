@@ -12847,3 +12847,93 @@ async fn copies_of_messages_to_shops_go_30_days_after_the_order_is_done() {
         0
     );
 }
+
+// ---------------------------------------------------------------- issue #109: founding emails
+
+#[tokio::test]
+async fn founding_applications_email_the_admins_and_the_applicant_hears_back() {
+    let Some((s, _st, _seller, _id, _state, sent)) = disputes_site().await else {
+        return;
+    };
+    let mails = || -> Vec<(String, String, String)> {
+        sent.lock()
+            .unwrap()
+            .iter()
+            .map(|v| {
+                let m = &v["mailpit"];
+                (
+                    m["To"][0]["Email"].as_str().unwrap().to_string(),
+                    m["Subject"].as_str().unwrap().to_string(),
+                    m["Text"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+    let _bea = s.sign_up("bea%40example.com").await; // 1001
+    let admin = s.sign_up("ada%40example.com").await; // 1002, the admin
+    let nick = s.sign_up("nick%40example.com").await; // 1003
+    // no application waiting: no link for the admin
+    assert!(!s.get("/account", Some(&admin)).await.body.contains("Founding: "));
+    let before = mails().len();
+    let r = s
+        .post(
+            "/founding",
+            "name=Nick+Prints&work_url=https%3A%2F%2Fmakerworld.com%2Fen%2F%40nick&about=Gridfinity+bins",
+            Some(&nick),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER, "{}", r.body);
+    // one email, to the admin, with the name, link and what they make, and no address of Nick's
+    let got = mails();
+    assert_eq!(got.len(), before + 1, "{got:?}");
+    let (to, subject, text) = got.last().unwrap();
+    assert_eq!(to, "ada@example.com");
+    assert!(subject.contains("Nick Prints"), "{subject}");
+    assert!(
+        text.contains("New founding creator application: Nick Prints (https://makerworld.com/en/@nick)")
+            && text.contains("Gridfinity bins")
+            && text.contains("Review: https://makerfoundry.test/admin/founding"),
+        "{text}"
+    );
+    assert!(!text.contains("nick@example.com") && !subject.contains("nick@example.com"));
+    // a refused form sends nothing
+    s.post("/founding", "name=&about=x", Some(&nick)).await;
+    assert_eq!(mails().len(), before + 1);
+    // the link shows for the admin only, with the count; and from the overview
+    let account = s.get("/account", Some(&admin)).await.body;
+    assert!(
+        account.contains(r#"<a href="/admin/founding">Founding: 1 waiting</a>"#),
+        "{account}"
+    );
+    assert!(!s.get("/account", Some(&nick)).await.body.contains("Founding: "));
+    assert!(
+        s.get("/admin/overview", Some(&admin))
+            .await
+            .body
+            .contains(r#"href="/admin/founding""#)
+    );
+    // approving tells the applicant, once
+    s.post("/admin/founding/1003/approve", "", Some(&admin)).await;
+    s.post("/admin/founding/1003/approve", "", Some(&admin)).await;
+    let got = mails();
+    assert_eq!(got.len(), before + 2, "{got:?}");
+    let (to, subject, text) = got.last().unwrap();
+    assert_eq!(to, "nick@example.com");
+    assert!(
+        subject.contains("Founding creator #1") && text.contains("Founding creator #1"),
+        "{subject} {text}"
+    );
+    assert!(!s.get("/account", Some(&admin)).await.body.contains("Founding: "));
+    // declining tells the applicant, kindly
+    s.post("/founding", "name=Cy&about=Laser", Some(&_bea)).await;
+    let n = mails().len();
+    s.post("/admin/founding/1001/decline", "", Some(&admin)).await;
+    let got = mails();
+    assert_eq!(got.len(), n + 1, "{got:?}");
+    let (to, _subject, text) = got.last().unwrap();
+    assert_eq!(to, "bea@example.com");
+    assert!(text.contains("Thank you for applying"), "{text}");
+    // removing a badge sends nothing
+    s.post("/admin/founding/1003/remove", "", Some(&admin)).await;
+    assert_eq!(mails().len(), n + 1);
+}

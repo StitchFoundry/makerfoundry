@@ -439,6 +439,7 @@ pub async fn account_page(State(state): State<AppState>, headers: HeaderMap) -> 
         },
         None => String::new(),
     };
+    let founding_waiting = crate::founding::waiting_link(&state, user.account_id).await;
     let proofs = if crate::proofs::available(&state, &user) {
         r#"<p><a href="/proofs">Proofs</a>: send a customer a design to approve before you stitch or cut it.</p>"#
     } else {
@@ -475,6 +476,7 @@ pub async fn account_page(State(state): State<AppState>, headers: HeaderMap) -> 
 <p class="lead">You're signed in as <strong>{email}</strong>, with your Foundry Account.</p>
 <p><a href="/designs">Your designs</a>: add a design file and photos of what it makes.</p>
 {founding}
+{founding_waiting}
 {activity}
 {proofs}
 <p><a href="/account/maker">Your maker profile</a>: the name people see on your designs.</p>
