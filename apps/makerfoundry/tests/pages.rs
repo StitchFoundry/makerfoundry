@@ -75,6 +75,14 @@ async fn home_page_is_html_and_links_the_stylesheet() {
 }
 
 #[tokio::test]
+async fn home_page_has_a_share_card() {
+    let (_, _, body) = get("/").await;
+    for tag in ["og:title", "og:description", "og:url", "twitter:card"] {
+        assert!(body.contains(tag), "missing {tag}");
+    }
+}
+
+#[tokio::test]
 async fn home_page_names_all_three_crafts() {
     let (_, _, body) = get("/").await;
     assert!(body.contains("<h2>Embroidery</h2>") && body.contains("<h2>Laser cutting</h2>"));

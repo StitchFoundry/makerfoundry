@@ -87,9 +87,9 @@ pub fn page_with(title: &str, body: &str, signed_in: bool, preview: Option<&Prev
         }
     };
     let nav = if signed_in {
-        r#"<a href="/browse">Browse</a><a href="/account">Account</a>"#
+        r#"<a href="/browse">Browse</a><a class="upload" href="/designs/new">Upload</a><a href="/account">Account</a>"#
     } else {
-        r#"<a href="/browse">Browse</a><a href="/signin">Sign in</a>"#
+        r#"<a href="/browse">Browse</a><a class="upload" href="/signup">Upload</a><a href="/signin">Sign in</a>"#
     };
     format!(
         r#"<!doctype html>
@@ -103,7 +103,7 @@ pub fn page_with(title: &str, body: &str, signed_in: bool, preview: Option<&Prev
 <link rel="stylesheet" href="/static/site.css">
 </head>
 <body>
-<header class="top"><a class="brand" href="/">{MARK_SVG}<span>MakerFoundry</span></a><nav>{nav}</nav></header>
+<header class="top"><a class="brand" href="/">{MARK_SVG}<span>MakerFoundry</span></a><form class="hsearch" role="search" method="get" action="/browse"><input type="search" name="q" placeholder="Search designs" aria-label="Search designs" maxlength="200"></form><nav>{nav}</nav></header>
 <main>
 {body}
 </main>

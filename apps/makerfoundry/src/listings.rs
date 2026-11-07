@@ -128,6 +128,8 @@ pub struct Filter {
     pub followed_by: Option<i64>,
     /// Whether 3D models are shown (MF-42: once MakerFoundry 3D is on).
     pub three_d: bool,
+    /// Only designs by founding creators.
+    pub founding_only: bool,
     pub page: i64,
 }
 
@@ -143,16 +145,20 @@ pub struct Card {
     pub maker: String,
     pub downloads: i64,
     pub price: i64,
+    /// The maker's founding creator number, if they are one.
+    pub founding: Option<i32>,
 }
 
 pub async fn find(pool: &PgPool, f: &Filter, limit: i64) -> Vec<Card> {
     let rows = sqlx::query(
         "SELECT d.id, d.title, d.kind, d.format, d.downloads, d.price_cents, m.name AS maker,
                 (SELECT p.id FROM mf_design_photos p WHERE p.design_id = d.id ORDER BY p.position LIMIT 1) AS photo,
-                (SELECT f.id FROM mf_model_files f WHERE f.design_id = d.id AND f.thumb_key IS NOT NULL ORDER BY f.position LIMIT 1) AS model_file
+                (SELECT f.id FROM mf_model_files f WHERE f.design_id = d.id AND f.thumb_key IS NOT NULL ORDER BY f.position LIMIT 1) AS model_file,
+                (SELECT w.number FROM mf_founding w WHERE w.account_id = d.account_id AND w.status = 'approved') AS founding
          FROM mf_designs d JOIN mf_makers m ON m.account_id = d.account_id
          WHERE d.status = 'published'
            AND (d.kind <> 'model3d' OR $15)
+           AND (NOT $16 OR EXISTS (SELECT 1 FROM mf_founding w WHERE w.account_id = d.account_id AND w.status = 'approved'))
            AND ($1::text IS NULL OR d.kind = $1)
            AND ($2::text IS NULL OR $2 = ANY (d.tags))
            AND ($3::text IS NULL OR d.search @@ websearch_to_tsquery('english', $3))
@@ -185,6 +191,7 @@ pub async fn find(pool: &PgPool, f: &Filter, limit: i64) -> Vec<Card> {
     .bind(f.most_saved)
     .bind(f.followed_by)
     .bind(f.three_d)
+    .bind(f.founding_only)
     .fetch_all(pool)
     .await;
     match rows {
@@ -201,6 +208,7 @@ pub async fn find(pool: &PgPool, f: &Filter, limit: i64) -> Vec<Card> {
                     maker: r.try_get("maker").ok()?,
                     downloads: r.try_get("downloads").ok()?,
                     price: r.try_get("price_cents").ok()?,
+                    founding: r.try_get("founding").ok()?,
                 })
             })
             .collect(),
@@ -233,14 +241,23 @@ pub fn card_html(c: &Card, label: Option<&str>) -> String {
         {
             let picture = match (c.photo, c.model_file) {
                 (Some(p), _) => format!(
-                    r#"<img src="/designs/{}/photos/{p}/thumb" alt="" loading="lazy">"#,
-                    c.id
+                    r#"<img src="/designs/{}/photos/{p}/thumb" alt="{}" loading="lazy">"#,
+                    c.id,
+                    escape(&c.title)
                 ),
-                (None, Some(f)) => format!(r#"<img src="/3d/{}/files/{f}/hero" alt="" loading="lazy">"#, c.id),
+                (None, Some(f)) => format!(
+                    r#"<img src="/3d/{}/files/{f}/hero" alt="{}" loading="lazy">"#,
+                    c.id,
+                    escape(&c.title)
+                ),
                 _ => r#"<span class="muted">No photo</span>"#.to_string(),
             };
             format!(
-                r#"<li><a href="/d/{id}/{slug}"><span class="thumb">{picture}</span>{label}<strong>{title}</strong><span class="muted">by {maker} · {kind}, {format}{downloads}</span><span class="price">{price}</span></a></li>"#,
+                r#"<li><a href="/d/{id}/{slug}"><span class="thumb">{picture}</span>{label}<strong>{title}</strong><span class="muted">by {maker}{founding}</span><span class="muted"><span class="kind-chip">{kind}</span> {format}{downloads}</span><span class="price">{price}</span></a></li>"#,
+                founding = c
+                    .founding
+                    .map(|n| format!(r#" <span class="badge founding" title="Founding creator #{n}">Founding</span>"#))
+                    .unwrap_or_default(),
                 label = label
                     .map(|l| format!(r#"<span class="pick">{}</span>"#, escape(l)))
                     .unwrap_or_default(),
@@ -292,6 +309,7 @@ pub async fn cards_of(pool: &PgPool, ids: &[i64], three_d: bool) -> Vec<Card> {
                 maker: r.try_get("maker").ok()?,
                 downloads: r.try_get("downloads").ok()?,
                 price: r.try_get("price_cents").ok()?,
+                founding: None,
             })
         })
         .collect();
@@ -314,35 +332,23 @@ pub async fn cards(pool: &PgPool, account: i64, limit: i64) -> String {
     )
 }
 
-/// The home page's most downloaded designs (empty until something has been downloaded).
-pub async fn popular(state: &AppState) -> String {
+/// How many published designs there are (3D models only while `three_d`); 0 without a database.
+pub async fn published_count(state: &AppState) -> i64 {
     let Some(pool) = state.db.as_ref() else {
-        return String::new();
+        return 0;
     };
-    let found: Vec<Card> = find(
-        pool,
-        &Filter {
-            three_d: state.three_d,
-            popular: true,
-            ..Filter::default()
-        },
-        8,
-    )
-    .await
-    .into_iter()
-    .filter(|c| c.downloads > 0)
-    .collect();
-    if found.is_empty() {
-        return String::new();
-    }
-    format!(
-        r#"<section class="design"><h2>Most downloaded</h2>{}<p><a href="/browse?sort=popular">See more</a></p></section>"#,
-        cards_html(&found)
-    )
+    sqlx::query_scalar("SELECT count(*) FROM mf_designs WHERE status = 'published' AND (kind <> 'model3d' OR $1)")
+        .bind(state.three_d)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0)
 }
 
-/// The home page's newest designs (empty while there are none).
-pub async fn newest(state: &AppState) -> String {
+/// Fewer designs than this and the home page shows the founding invitation, not empty shelves.
+pub const SPARSE: i64 = 8;
+
+/// One home-page shelf: a heading, a grid of design cards and a link; empty while there are none.
+async fn shelf(state: &AppState, title: &str, more: (&str, &str), filter: Filter) -> String {
     let Some(pool) = state.db.as_ref() else {
         return String::new();
     };
@@ -350,18 +356,58 @@ pub async fn newest(state: &AppState) -> String {
         pool,
         &Filter {
             three_d: state.three_d,
-            ..Filter::default()
+            ..filter
         },
-        8,
+        10,
     )
     .await;
     if found.is_empty() {
         return String::new();
     }
     format!(
-        r#"<section class="design"><h2>Newest designs</h2>{}<p><a href="/browse">Browse all designs</a></p></section>"#,
-        cards_html(&found)
+        r#"<section class="design shelf"><h2>{title}</h2>{}<p><a href="{}">{}</a></p></section>"#,
+        cards_html(&found),
+        more.0,
+        more.1
     )
+}
+
+/// The home page's shelves of design cards: trending (most saved), newest, free, and founding
+/// creators' designs. Empty while there are none.
+pub async fn shelves(state: &AppState) -> String {
+    let trending = shelf(
+        state,
+        "Trending",
+        ("/browse?sort=saved", "See more trending designs"),
+        Filter {
+            most_saved: true,
+            ..Filter::default()
+        },
+    )
+    .await;
+    let newest = shelf(state, "Newest", ("/browse", "Browse all designs"), Filter::default()).await;
+    let free = shelf(
+        state,
+        "Free to download",
+        ("/browse?price=free", "See all free designs"),
+        Filter {
+            free: Some(true),
+            popular: true,
+            ..Filter::default()
+        },
+    )
+    .await;
+    let founding = shelf(
+        state,
+        "From founding creators",
+        ("/founding", "Become a founding creator"),
+        Filter {
+            founding_only: true,
+            ..Filter::default()
+        },
+    )
+    .await;
+    format!("{trending}{newest}{free}{founding}")
 }
 
 #[derive(Deserialize, Default)]
@@ -380,7 +426,11 @@ pub struct BrowseQuery {
 pub async fn browse(State(state): State<AppState>, headers: HeaderMap, Query(q): Query<BrowseQuery>) -> Response {
     let signed_in = current_user(&state, &headers).await.is_some();
     let words = q.q.trim().chars().take(200).collect::<String>();
-    let kind = matches!(q.kind.as_str(), "embroidery" | "laser").then(|| q.kind.clone());
+    let asked = match q.kind.as_str() {
+        "embroidery" | "laser" => Some(q.kind.clone()),
+        "3d" if state.three_d => Some("model3d".to_string()),
+        _ => None,
+    };
     let tag = tidy_tags(&q.tag).into_iter().next();
     let popular = q.sort == "popular";
     let most_saved = q.sort == "saved";
@@ -397,17 +447,26 @@ pub async fn browse(State(state): State<AppState>, headers: HeaderMap, Query(q):
     };
     let hoop = sizes::hoop(&q.hoop);
     let material = sizes::material_name(&q.material).map(|_| q.material.clone());
-    // a hoop means embroidery, a material laser
-    let kind = match (hoop, &material) {
-        (Some(_), _) => Some("embroidery".to_string()),
-        (None, Some(_)) => Some("laser".to_string()),
-        _ => kind,
+    // a hoop alone means embroidery, a material alone laser; with a kind chosen, only that
+    // kind's filters count (no hidden hoop left on a laser search)
+    let kind = match (&asked, hoop, &material) {
+        (Some(k), _, _) => Some(k.clone()),
+        (None, Some(_), _) => Some("embroidery".to_string()),
+        (None, None, Some(_)) => Some("laser".to_string()),
+        _ => None,
+    };
+    let hoop = hoop.filter(|_| kind.as_deref() == Some("embroidery"));
+    let material = material.filter(|_| kind.as_deref() == Some("laser"));
+    let kind_param = match kind.as_deref() {
+        Some("model3d") => "3d",
+        Some(k) => k,
+        None => "",
     };
     // the search as it stands, for links that change one part of it
     let search = format!(
         "q={q}&amp;kind={k}&amp;price={price}&amp;hoop={h}&amp;material={m}&amp;sort={s}",
         q = escape(&url_word(&words)),
-        k = escape(kind.as_deref().unwrap_or("")),
+        k = kind_param,
         h = hoop.map_or("", |h| h.id),
         m = escape(material.as_deref().unwrap_or("")),
         s = if popular {
@@ -431,6 +490,7 @@ pub async fn browse(State(state): State<AppState>, headers: HeaderMap, Query(q):
         most_saved,
         collection: None,
         followed_by: None,
+        founding_only: false,
         page: page_no,
     };
     let found = match state.db.as_ref() {
@@ -459,17 +519,37 @@ pub async fn browse(State(state): State<AppState>, headers: HeaderMap, Query(q):
     } else {
         String::new()
     };
+    let hoops = HOOPS
+        .iter()
+        .map(|h| {
+            format!(
+                r#"<option value="{}"{}>Fits {}</option>"#,
+                h.id,
+                selected(hoop.is_some_and(|x| x.id == h.id)),
+                escape(h.name)
+            )
+        })
+        .collect::<String>();
+    let materials = MATERIALS
+        .iter()
+        .map(|(id, name)| {
+            format!(
+                r#"<option value="{id}"{}>{name}</option>"#,
+                selected(material.as_deref() == Some(*id))
+            )
+        })
+        .collect::<String>();
     Html(page(
         "Browse designs · MakerFoundry",
         &format!(
             r#"<section class="design">
 <h1>Browse designs</h1>
+{tabs}
 <form class="search" method="get" action="/browse">
 <input type="search" name="q" value="{words}" placeholder="Search designs" aria-label="Search designs" maxlength="200">
-<select name="kind" aria-label="Kind"><option value="">Embroidery and laser</option><option value="embroidery"{e}>Embroidery</option><option value="laser"{l}>Laser</option></select>
+<input type="hidden" name="kind" value="{kind_param}">
 <select name="price" aria-label="Price"><option value="">Free and paid</option><option value="free"{fr}>Free</option><option value="paid"{pd}>Paid</option></select>
-<select name="hoop" aria-label="Hoop"><option value="">Any hoop</option>{hoops}</select>
-<select name="material" aria-label="Material"><option value="">Any material</option>{materials}</select>
+{kind_filters}
 <select name="sort" aria-label="Order"><option value="newest">Newest</option><option value="popular"{p}>Most downloaded</option><option value="saved"{ms}>Most saved</option></select>
 <input type="hidden" name="tag" value="{tag}">
 <button type="submit">Search</button>
@@ -477,26 +557,19 @@ pub async fn browse(State(state): State<AppState>, headers: HeaderMap, Query(q):
 {tag_note}{results}{more}
 </section>"#,
             words = escape(&words),
-            e = selected(kind.as_deref() == Some("embroidery")),
-            l = selected(kind.as_deref() == Some("laser")),
+            tabs = kind_tabs(kind_param, state.three_d, &words, price, popular, most_saved),
+            kind_param = kind_param,
+            kind_filters = match kind.as_deref() {
+                Some("embroidery") => format!(
+                    r#"<select name="hoop" aria-label="Hoop"><option value="">Any hoop</option>{hoops}</select>"#
+                ),
+                Some("laser") => format!(
+                    r#"<select name="material" aria-label="Material"><option value="">Any material</option>{materials}</select>"#
+                ),
+                _ => String::new(),
+            },
             p = selected(popular),
             ms = selected(most_saved),
-            hoops = HOOPS
-                .iter()
-                .map(|h| format!(
-                    r#"<option value="{}"{}>Fits {}</option>"#,
-                    h.id,
-                    selected(hoop.is_some_and(|x| x.id == h.id)),
-                    escape(h.name)
-                ))
-                .collect::<String>(),
-            materials = MATERIALS
-                .iter()
-                .map(|(id, name)| format!(
-                    r#"<option value="{id}"{}>{name}</option>"#,
-                    selected(material.as_deref() == Some(*id))
-                ))
-                .collect::<String>(),
             fr = selected(free == Some(true)),
             pd = selected(free == Some(false)),
             tag = escape(tag.as_deref().unwrap_or("")),
@@ -504,6 +577,34 @@ pub async fn browse(State(state): State<AppState>, headers: HeaderMap, Query(q):
         signed_in,
     ))
     .into_response()
+}
+
+/// The kind tabs on `/browse`: All, Embroidery, Laser, and 3D print once models are open. A
+/// tab keeps the words, price and order but drops the other kind's filters.
+fn kind_tabs(current: &str, three_d: bool, words: &str, price: &str, popular: bool, most_saved: bool) -> String {
+    let sort = if popular {
+        "popular"
+    } else if most_saved {
+        "saved"
+    } else {
+        "newest"
+    };
+    let mut tabs = vec![("", "All"), ("embroidery", "Embroidery"), ("laser", "Laser")];
+    if three_d {
+        tabs.push(("3d", "3D print"));
+    }
+    let items: String = tabs
+        .iter()
+        .map(|(id, name)| {
+            let here = *id == current;
+            format!(
+                r#"<li><a href="/browse?q={q}&amp;kind={id}&amp;price={price}&amp;sort={sort}"{aria}>{name}</a></li>"#,
+                q = escape(&url_word(words)),
+                aria = if here { r#" aria-current="page""# } else { "" },
+            )
+        })
+        .collect();
+    format!(r#"<nav aria-label="Kind of design"><ul class="kind-tabs">{items}</ul></nav>"#)
 }
 
 /// `text` for a URL's query.
