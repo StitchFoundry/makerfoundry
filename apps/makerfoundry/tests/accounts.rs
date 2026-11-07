@@ -3637,6 +3637,25 @@ async fn designs_are_found_by_the_hoop_they_fit_and_the_material_they_cut() {
     // nonsense is ignored
     let all = s.get("/browse?hoop=99x99&material=gold", None).await.body;
     assert!(has(&all, boxed) && has(&all, rose));
+    // only the chosen kind's filters show (#110)
+    let laser = s.get("/browse?kind=laser", None).await.body;
+    assert!(laser.contains(r#"name="material""#) && !laser.contains(r#"name="hoop""#));
+    assert!(has(&laser, boxed) && !has(&laser, rose));
+    let emb = s.get("/browse?kind=embroidery", None).await.body;
+    assert!(emb.contains(r#"name="hoop""#) && !emb.contains(r#"name="material""#));
+    let both = s.get("/browse", None).await.body;
+    assert!(!both.contains(r#"name="hoop""#) && !both.contains(r#"name="material""#));
+    assert!(both.contains(r#"<a href="/browse?q=&amp;kind=laser"#));
+    // a filter from another kind is ignored, and the tab for the kind is marked
+    let ignored = s.get("/browse?kind=embroidery&material=acrylic", None).await.body;
+    assert!(has(&ignored, rose) && !has(&ignored, boxed));
+    let ignored = s.get("/browse?kind=laser&hoop=4x4", None).await.body;
+    assert!(has(&ignored, boxed) && !has(&ignored, rose));
+    assert!(ignored.contains(r#"kind=laser&amp;price=&amp;sort=newest" aria-current="page""#));
+    // 3D print is not a tab until models are open, and kind=3d is ignored until then
+    assert!(!both.contains("3D print"));
+    let three = s.get("/browse?kind=3d", None).await.body;
+    assert!(has(&three, boxed) && has(&three, rose));
 }
 
 #[tokio::test]

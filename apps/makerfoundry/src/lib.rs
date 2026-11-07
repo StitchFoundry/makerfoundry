@@ -540,7 +540,14 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Html<String>
     };
     // 3D models open with MakerFoundry 3D (MF-35, `MF_3D`); until then the card says they're coming.
     let three_d_soon = if state.three_d { "" } else { " 3D models open soon." };
-    Html(page(
+    let home_url = format!("{}/", state.public_url);
+    let preview = pages::Preview {
+        title: "MakerFoundry: designs for your machines",
+        description: "Machine-embroidery designs, laser-cut files and 3D-print models, shared free or sold by the makers who made them.",
+        url: &home_url,
+        image: None,
+    };
+    Html(pages::page_with(
         "MakerFoundry",
         &format!(
             r#"<section class="hero">
@@ -577,6 +584,7 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Html<String>
 {popular}"#
         ),
         signed_in,
+        Some(&preview),
     ))
 }
 

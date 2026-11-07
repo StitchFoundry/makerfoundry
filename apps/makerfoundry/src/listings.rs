@@ -380,7 +380,11 @@ pub struct BrowseQuery {
 pub async fn browse(State(state): State<AppState>, headers: HeaderMap, Query(q): Query<BrowseQuery>) -> Response {
     let signed_in = current_user(&state, &headers).await.is_some();
     let words = q.q.trim().chars().take(200).collect::<String>();
-    let kind = matches!(q.kind.as_str(), "embroidery" | "laser").then(|| q.kind.clone());
+    let asked = match q.kind.as_str() {
+        "embroidery" | "laser" => Some(q.kind.clone()),
+        "3d" if state.three_d => Some("model3d".to_string()),
+        _ => None,
+    };
     let tag = tidy_tags(&q.tag).into_iter().next();
     let popular = q.sort == "popular";
     let most_saved = q.sort == "saved";
@@ -397,17 +401,26 @@ pub async fn browse(State(state): State<AppState>, headers: HeaderMap, Query(q):
     };
     let hoop = sizes::hoop(&q.hoop);
     let material = sizes::material_name(&q.material).map(|_| q.material.clone());
-    // a hoop means embroidery, a material laser
-    let kind = match (hoop, &material) {
-        (Some(_), _) => Some("embroidery".to_string()),
-        (None, Some(_)) => Some("laser".to_string()),
-        _ => kind,
+    // a hoop alone means embroidery, a material alone laser; with a kind chosen, only that
+    // kind's filters count (no hidden hoop left on a laser search)
+    let kind = match (&asked, hoop, &material) {
+        (Some(k), _, _) => Some(k.clone()),
+        (None, Some(_), _) => Some("embroidery".to_string()),
+        (None, None, Some(_)) => Some("laser".to_string()),
+        _ => None,
+    };
+    let hoop = hoop.filter(|_| kind.as_deref() == Some("embroidery"));
+    let material = material.filter(|_| kind.as_deref() == Some("laser"));
+    let kind_param = match kind.as_deref() {
+        Some("model3d") => "3d",
+        Some(k) => k,
+        None => "",
     };
     // the search as it stands, for links that change one part of it
     let search = format!(
         "q={q}&amp;kind={k}&amp;price={price}&amp;hoop={h}&amp;material={m}&amp;sort={s}",
         q = escape(&url_word(&words)),
-        k = escape(kind.as_deref().unwrap_or("")),
+        k = kind_param,
         h = hoop.map_or("", |h| h.id),
         m = escape(material.as_deref().unwrap_or("")),
         s = if popular {
@@ -459,17 +472,37 @@ pub async fn browse(State(state): State<AppState>, headers: HeaderMap, Query(q):
     } else {
         String::new()
     };
+    let hoops = HOOPS
+        .iter()
+        .map(|h| {
+            format!(
+                r#"<option value="{}"{}>Fits {}</option>"#,
+                h.id,
+                selected(hoop.is_some_and(|x| x.id == h.id)),
+                escape(h.name)
+            )
+        })
+        .collect::<String>();
+    let materials = MATERIALS
+        .iter()
+        .map(|(id, name)| {
+            format!(
+                r#"<option value="{id}"{}>{name}</option>"#,
+                selected(material.as_deref() == Some(*id))
+            )
+        })
+        .collect::<String>();
     Html(page(
         "Browse designs · MakerFoundry",
         &format!(
             r#"<section class="design">
 <h1>Browse designs</h1>
+{tabs}
 <form class="search" method="get" action="/browse">
 <input type="search" name="q" value="{words}" placeholder="Search designs" aria-label="Search designs" maxlength="200">
-<select name="kind" aria-label="Kind"><option value="">Embroidery and laser</option><option value="embroidery"{e}>Embroidery</option><option value="laser"{l}>Laser</option></select>
+<input type="hidden" name="kind" value="{kind_param}">
 <select name="price" aria-label="Price"><option value="">Free and paid</option><option value="free"{fr}>Free</option><option value="paid"{pd}>Paid</option></select>
-<select name="hoop" aria-label="Hoop"><option value="">Any hoop</option>{hoops}</select>
-<select name="material" aria-label="Material"><option value="">Any material</option>{materials}</select>
+{kind_filters}
 <select name="sort" aria-label="Order"><option value="newest">Newest</option><option value="popular"{p}>Most downloaded</option><option value="saved"{ms}>Most saved</option></select>
 <input type="hidden" name="tag" value="{tag}">
 <button type="submit">Search</button>
@@ -477,26 +510,19 @@ pub async fn browse(State(state): State<AppState>, headers: HeaderMap, Query(q):
 {tag_note}{results}{more}
 </section>"#,
             words = escape(&words),
-            e = selected(kind.as_deref() == Some("embroidery")),
-            l = selected(kind.as_deref() == Some("laser")),
+            tabs = kind_tabs(kind_param, state.three_d, &words, price, popular, most_saved),
+            kind_param = kind_param,
+            kind_filters = match kind.as_deref() {
+                Some("embroidery") => format!(
+                    r#"<select name="hoop" aria-label="Hoop"><option value="">Any hoop</option>{hoops}</select>"#
+                ),
+                Some("laser") => format!(
+                    r#"<select name="material" aria-label="Material"><option value="">Any material</option>{materials}</select>"#
+                ),
+                _ => String::new(),
+            },
             p = selected(popular),
             ms = selected(most_saved),
-            hoops = HOOPS
-                .iter()
-                .map(|h| format!(
-                    r#"<option value="{}"{}>Fits {}</option>"#,
-                    h.id,
-                    selected(hoop.is_some_and(|x| x.id == h.id)),
-                    escape(h.name)
-                ))
-                .collect::<String>(),
-            materials = MATERIALS
-                .iter()
-                .map(|(id, name)| format!(
-                    r#"<option value="{id}"{}>{name}</option>"#,
-                    selected(material.as_deref() == Some(*id))
-                ))
-                .collect::<String>(),
             fr = selected(free == Some(true)),
             pd = selected(free == Some(false)),
             tag = escape(tag.as_deref().unwrap_or("")),
@@ -504,6 +530,34 @@ pub async fn browse(State(state): State<AppState>, headers: HeaderMap, Query(q):
         signed_in,
     ))
     .into_response()
+}
+
+/// The kind tabs on `/browse`: All, Embroidery, Laser, and 3D print once models are open. A
+/// tab keeps the words, price and order but drops the other kind's filters.
+fn kind_tabs(current: &str, three_d: bool, words: &str, price: &str, popular: bool, most_saved: bool) -> String {
+    let sort = if popular {
+        "popular"
+    } else if most_saved {
+        "saved"
+    } else {
+        "newest"
+    };
+    let mut tabs = vec![("", "All"), ("embroidery", "Embroidery"), ("laser", "Laser")];
+    if three_d {
+        tabs.push(("3d", "3D print"));
+    }
+    let items: String = tabs
+        .iter()
+        .map(|(id, name)| {
+            let here = *id == current;
+            format!(
+                r#"<li><a href="/browse?q={q}&amp;kind={id}&amp;price={price}&amp;sort={sort}"{aria}>{name}</a></li>"#,
+                q = escape(&url_word(words)),
+                aria = if here { r#" aria-current="page""# } else { "" },
+            )
+        })
+        .collect();
+    format!(r#"<nav aria-label="Kind of design"><ul class="kind-tabs">{items}</ul></nav>"#)
 }
 
 /// `text` for a URL's query.
