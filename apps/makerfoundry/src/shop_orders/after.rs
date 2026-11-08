@@ -259,7 +259,10 @@ pub async fn record_refund(conn: &mut PgConnection, id: i64) -> Result<bool, sql
     Ok(true)
 }
 
-/// `charge.refunded` for a shop order's payment (a full refund): recorded once.
+/// `charge.refunded` for a shop order's payment (a full refund): recorded once, and the refund
+/// made due, so `settle` (from the sweep) checks the transfer to the shop was reversed and gives
+/// the 10% back, as for a refund MakerFoundry makes (issue #106: one made in the Stripe Dashboard
+/// otherwise left the shop with the transfer, or without its 10%).
 pub async fn refunded_by_stripe(conn: &mut PgConnection, intent: &str) -> Result<(), sqlx::Error> {
     let id: Option<i64> = sqlx::query_scalar("SELECT id FROM mf_shop_orders WHERE stripe_payment_intent = $1")
         .bind(intent)
@@ -267,6 +270,75 @@ pub async fn refunded_by_stripe(conn: &mut PgConnection, intent: &str) -> Result
         .await?;
     if let Some(id) = id {
         record_refund(conn, id).await?;
+        sqlx::query("UPDATE mf_shop_orders SET refund_due = true WHERE id = $1 AND paid_at IS NOT NULL")
+            .bind(id)
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
+}
+
+/// After a new `charge.refunded` for part of a shop order's payment (made in the Stripe Dashboard;
+/// MakerFoundry only refunds shop orders in full): the admins are told, since the shop's share
+/// isn't taken back for it (issue #106).
+pub async fn partly_refunded(state: &AppState, pool: &PgPool, charge: &Value) {
+    if charge.get("refunded").and_then(Value::as_bool) == Some(true)
+        || charge.get("amount_refunded").and_then(Value::as_i64).unwrap_or(0) <= 0
+    {
+        return;
+    }
+    let Some(intent) = charge.get("payment_intent").and_then(Value::as_str) else {
+        return;
+    };
+    let reference: Option<String> =
+        sqlx::query_scalar("SELECT ref FROM mf_shop_orders WHERE stripe_payment_intent = $1 AND paid_at IS NOT NULL")
+            .bind(intent)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    let Some(reference) = reference else { return };
+    eprintln!("ALERT shop orders: {reference} was partly refunded outside MakerFoundry");
+    let text = format!(
+        "Shop order {reference} was partly refunded outside MakerFoundry (in the Stripe Dashboard). MakerFoundry refunds shop orders only in full, so the shop's share and the ledger weren't changed for it; if the rest is refunded later, MakerFoundry takes each refund back from the shop's transfer itself (unless Stripe did). The order is on {}/admin/orders.",
+        state.public_url.trim_end_matches('/')
+    );
+    crate::disputes::alert_admins(
+        state,
+        pool,
+        &format!("Partial refund of shop order {reference} needs a look"),
+        &text,
+    )
+    .await;
+}
+
+/// Refunds of `intent`'s charge made outside MakerFoundry (the Stripe Dashboard) without "Reverse
+/// transfer": the refunded amount taken back from the shop's transfer, once for each
+/// (https://docs.stripe.com/connect/destination-charges#issue-refunds).
+async fn reverse_outside_refunds(stripe: &crate::stripe::Stripe, intent: &str, id: i64) -> Result<(), String> {
+    let payment = stripe
+        .get(&format!("/v1/payment_intents/{intent}?expand[]=latest_charge"))
+        .await
+        .map_err(|e| e.to_string())?;
+    let charge = payment
+        .pointer("/latest_charge/id")
+        .and_then(Value::as_str)
+        .filter(|c| stripe_id(c, "ch_"))
+        .ok_or("Stripe shows no charge for this order")?;
+    let list = stripe
+        .get(&format!("/v1/refunds?charge={charge}&limit=100"))
+        .await
+        .map_err(|e| e.to_string())?;
+    for r in list.get("data").and_then(Value::as_array).into_iter().flatten() {
+        let ours = r.pointer("/metadata/shop_order").and_then(Value::as_str).is_some();
+        let refund = r.get("id").and_then(Value::as_str).unwrap_or("");
+        if ours || r.get("status").and_then(Value::as_str) != Some("succeeded") || !stripe_id(refund, "re_") {
+            continue;
+        }
+        let amount = r.get("amount").and_then(Value::as_i64).unwrap_or(0);
+        if amount > 0 && r.get("transfer_reversal").and_then(Value::as_str).is_none() {
+            crate::selling::reverse(stripe, Some(intent), id, amount, &format!("shop_refund_{refund}")).await?;
+        }
     }
     Ok(())
 }
@@ -342,6 +414,9 @@ pub async fn settle(state: &AppState, pool: &PgPool, id: i64) -> Result<(), Stri
         let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
         record_refund(&mut tx, id).await.map_err(|e| e.to_string())?;
         tx.commit().await.map_err(|e| e.to_string())?;
+    } else {
+        // refunded by Stripe before MakerFoundry did: perhaps in the Dashboard (issue #106)
+        reverse_outside_refunds(stripe, &intent, id).await?;
     }
     if tax > 0 {
         super::tax::reverse(stripe, pool, id).await?;
