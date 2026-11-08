@@ -3664,6 +3664,76 @@ async fn designs_are_found_by_the_hoop_they_fit_and_the_material_they_cut() {
     assert!(has(&three, boxed) && has(&three, rose));
 }
 
+/// #115: the browse page counts what it found, offers the four orders, and a design published
+/// a moment ago leads the Newest order and the home shelf at once (no cache delay).
+#[tokio::test]
+async fn browse_shows_the_count_the_orders_and_the_newest_design_first() {
+    let Some(s) = site().await else { return };
+    let ann = s.sign_up("ann%40example.com").await;
+    let first = published(&s, &ann, "anns", "First+Rose").await;
+    let page = s.get("/browse", None).await.body;
+    assert!(
+        page.contains(r#"<p class="count" role="status">1 design</p>"#),
+        "{page}"
+    );
+    for order in ["Trending", "Newest", "Most downloaded", "Most saved"] {
+        assert!(page.contains(&format!(">{order}</a>")), "{order}");
+    }
+    assert!(page.contains(r#"sort=newest" aria-current="true">Newest"#), "{page}");
+    assert!(page.contains(r#"<details class="filters">"#) && !page.contains("Load more"));
+    // a second design appears at the top right away, on Browse and in the Newest order
+    let second = published(&s, &ann, "anns", "Second+Owl").await;
+    for url in ["/browse", "/browse?sort=newest"] {
+        let page = s.get(url, None).await.body;
+        assert!(page.contains(r#"class="count" role="status">2 designs</p>"#), "{url}");
+        let (a, b) = (page.find(&format!("/d/{second}/")), page.find(&format!("/d/{first}/")));
+        assert!(
+            a.is_some() && b.is_some() && a < b,
+            "{url}: the newest design is not first"
+        );
+    }
+    s.dump_page("browse", &s.get("/browse", None).await.body, None).await;
+    let home = s.get("/", None).await.body;
+    if let (Some(a), Some(b)) = (home.find(&format!("/d/{second}/")), home.rfind(&format!("/d/{first}/"))) {
+        assert!(a < b);
+    }
+    // a search narrows the count; Trending and the paging link keep the search
+    let owl = s.get("/browse?q=owl&sort=trending", None).await.body;
+    assert!(owl.contains(r#"class="count" role="status">1 design</p>"#), "{owl}");
+    assert!(owl.contains(r#"sort=trending" aria-current="true">Trending"#));
+    assert!(owl.contains(&format!("/d/{second}/")) && !owl.contains(&format!("/d/{first}/")));
+    let none = s.get("/browse?q=zebra", None).await.body;
+    assert!(none.contains("No designs found.") && none.contains(">No designs</p>"));
+    // beyond the end there is nothing more to load
+    assert!(!s.get("/browse?page=3", None).await.body.contains("Load more"));
+}
+
+/// #115: 24 designs fill the first screen; "Load more" brings the rest into the same grid.
+#[tokio::test]
+async fn browse_loads_more_designs_into_the_same_grid() {
+    let Some(s) = site().await else { return };
+    let ann = s.sign_up("ann%40example.com").await;
+    let mut ids = Vec::new();
+    for n in 0..25 {
+        ids.push(published(&s, &ann, "anns", &format!("Design+{n}")).await);
+    }
+    let first = s.get("/browse", None).await.body;
+    assert!(
+        first.contains(">25 designs</p>") && first.contains("Load more designs"),
+        "{first}"
+    );
+    assert!(first.contains(r#"sort=newest&amp;page=1" rel="next""#));
+    let shown = |body: &str| ids.iter().filter(|id| body.contains(&format!("/d/{id}/"))).count();
+    assert_eq!(shown(&first), 24);
+    assert!(
+        !first.contains(&format!("/d/{}/", ids[0])),
+        "the oldest waits for Load more"
+    );
+    let all = s.get("/browse?page=1", None).await.body;
+    assert_eq!(shown(&all), 25);
+    assert!(!all.contains("Load more designs"));
+}
+
 #[tokio::test]
 async fn a_design_has_more_formats_each_checked_and_downloadable() {
     let Some(s) = site().await else { return };
