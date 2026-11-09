@@ -317,6 +317,7 @@ pub fn app(state: AppState) -> Router {
         .route("/account/selling/start", post(selling::start))
         .route("/account/selling/return", get(selling::returned))
         .route("/account/selling/dashboard", post(selling::dashboard))
+        .route("/account/selling/accept-terms", post(selling::accept_terms))
         .route("/account/sales", get(selling::sales))
         .route("/library", get(selling::library))
         .route("/d/{id}/buy", post(selling::buy))

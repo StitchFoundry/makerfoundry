@@ -2070,7 +2070,7 @@ impl Site {
     async fn sign_up(&self, email: &str) -> String {
         self.post(
             "/signup",
-            &format!("email={email}&password=fire+truck+1&again=fire+truck+1"),
+            &format!("email={email}&password=fire+truck+1&again=fire+truck+1&agree=yes"),
             None,
         )
         .await
@@ -13175,4 +13175,138 @@ async fn founding_applications_email_the_admins_and_the_applicant_hears_back() {
     // removing a badge sends nothing
     s.post("/admin/founding/1003/remove", "", Some(&admin)).await;
     assert_eq!(mails().len(), n + 1);
+}
+
+/// A seller on an old version of the Seller Terms takes no new paid sales until they accept the
+/// current one (issue #96); everything else carries on.
+#[tokio::test]
+async fn a_seller_on_old_seller_terms_takes_no_new_paid_sales_until_they_accept() {
+    let (stripe, st) = fake_stripe().await;
+    let Some(site) = site_opts(Vec::new(), Some(stripe), true).await else {
+        return;
+    };
+    let Some((s, st, sam, id)) = selling_setup(site, st).await else {
+        return;
+    };
+    let current = makerfoundry::legal::SELLER_TERMS.version();
+    // setting up payouts recorded the current version
+    assert_eq!(
+        s.scalar(&format!("SELECT count(*) FROM mf_agreements WHERE account_id = 1000 AND document = 'seller-terms' AND version = '{current}'"))
+            .await,
+        1
+    );
+    let bea = s.sign_up("bea%40example.com").await;
+    let cal = s.sign_up("cal%40example.com").await;
+    // bea bought it earlier
+    sqlx::query(
+        "INSERT INTO mf_orders (buyer_account, design_id, seller_account, price_cents, fee_cents,
+             processing_cents, seller_cents, title, status, paid_at)
+         VALUES (1001, $1, 1000, 500, 50, 45, 405, 'Fox Patch', 'paid', now())",
+    )
+    .bind(id)
+    .execute(&s.pool)
+    .await
+    .unwrap();
+    // the terms change: sam's agreement is now to an old version
+    sqlx::query(
+        "UPDATE mf_agreements SET version = '000000000000' WHERE account_id = 1000 AND document = 'seller-terms'",
+    )
+    .execute(&s.pool)
+    .await
+    .unwrap();
+    let sessions_before = st.lock().unwrap().sessions.len();
+    let posts_before = st.lock().unwrap().posts.len();
+    // the listing is still there, with no Buy button
+    let page = s.get(&format!("/d/{id}"), Some(&cal)).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.body.contains("isn't available to buy right now"), "{}", page.body);
+    assert!(!page.body.contains(&format!(r#"action="/d/{id}/buy""#)));
+    // a buy that is sent anyway makes no order and no Stripe request
+    let r = s.post(&format!("/d/{id}/buy"), "", Some(&cal)).await;
+    assert!(r.body.contains("isn't available to buy right now"), "{}", r.body);
+    assert!(!r.body.contains("Sam") && !r.body.contains("sams-shop"));
+    assert_eq!(st.lock().unwrap().sessions.len(), sessions_before);
+    assert_eq!(st.lock().unwrap().posts.len(), posts_before);
+    assert_eq!(
+        s.scalar("SELECT count(*) FROM mf_orders WHERE buyer_account = 1002")
+            .await,
+        0
+    );
+    // a past purchase still downloads
+    let dl = s.get(&format!("/d/{id}/download"), Some(&bea)).await;
+    assert!(dl.location().contains("X-Amz-Signature="), "{}", dl.location());
+    // the seller sees the banner on both pages
+    for path in ["/account/selling", "/account/sales"] {
+        let b = s.get(path, Some(&sam)).await.body;
+        assert!(
+            b.contains("The Seller Terms have changed. Accept the new version"),
+            "{path}"
+        );
+        assert!(b.contains(r#"href="/seller-terms""#));
+    }
+    // refused: not from this site, not signed in, not a seller, no tick
+    let accept = "/account/selling/accept-terms";
+    let foreign = s
+        .send(
+            Request::post(accept)
+                .header(header::HOST, HOST)
+                .header(header::ORIGIN, "https://evil.example")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, sam.as_str())
+                .body(Body::from("agree=yes"))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(foreign.status, StatusCode::FORBIDDEN);
+    assert_eq!(s.post(accept, "agree=yes", None).await.location(), "/signin");
+    assert_eq!(
+        s.post(accept, "agree=yes", Some(&cal)).await.status,
+        StatusCode::FORBIDDEN
+    );
+    s.post(accept, "", Some(&sam)).await;
+    let accepted = format!("SELECT count(*) FROM mf_agreements WHERE account_id = 1000 AND version = '{current}'");
+    assert_eq!(s.scalar(&accepted).await, 0);
+    assert_eq!(
+        s.scalar("SELECT count(*) FROM mf_agreements WHERE account_id = 1002 AND document = 'seller-terms'")
+            .await,
+        0
+    );
+    // sam accepts: one row, the banner goes, and buying works again
+    let r = s.post(accept, "agree=yes&from=sales", Some(&sam)).await;
+    assert_eq!(r.location(), "/account/sales");
+    assert_eq!(s.scalar(&accepted).await, 1);
+    s.post(accept, "agree=yes", Some(&sam)).await;
+    assert_eq!(s.scalar(&accepted).await, 1);
+    assert!(
+        !s.get("/account/sales", Some(&sam))
+            .await
+            .body
+            .contains("Seller Terms have changed")
+    );
+    let r = s.post(&format!("/d/{id}/buy"), "", Some(&cal)).await;
+    assert!(
+        r.location().starts_with("https://checkout.stripe.com/"),
+        "{}",
+        r.location()
+    );
+    assert_eq!(st.lock().unwrap().sessions.len(), sessions_before + 1);
+}
+
+/// A free design from a seller on old terms still downloads (issue #96).
+#[tokio::test]
+async fn a_free_design_from_a_seller_on_old_terms_still_downloads() {
+    let Some(s) = site_opts(Vec::new(), None, true).await else {
+        return;
+    };
+    let ann = s.sign_up("ann%40example.com").await;
+    let id = published(&s, &ann, "anns", "Rose").await;
+    sqlx::query(
+        "INSERT INTO mf_agreements (account_id, document, version) VALUES (1000, 'seller-terms', '000000000000')",
+    )
+    .execute(&s.pool)
+    .await
+    .unwrap();
+    let dl = s.get(&format!("/d/{id}/download"), None).await;
+    assert_eq!(dl.status, StatusCode::SEE_OTHER, "{}", dl.body);
+    assert!(dl.location().contains("X-Amz-Signature="), "{}", dl.location());
 }

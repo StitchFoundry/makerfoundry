@@ -326,9 +326,13 @@ pub async fn selling_page(State(state): State<AppState>, headers: HeaderMap) -> 
         return Redirect::to("/signin").into_response();
     };
     let s = seller(pool, user.account_id).await;
+    let banner = terms_banner(&state, pool, user.account_id, "selling").await;
     private(
         "Selling · MakerFoundry",
-        &selling_html(&state, s.as_ref(), state.publishers.allows(user.account_id)),
+        &format!(
+            "{banner}{}",
+            selling_html(&state, s.as_ref(), state.publishers.allows(user.account_id))
+        ),
         true,
     )
 }
@@ -528,6 +532,65 @@ pub async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Res
     }
 }
 
+// ---------------------------------------------------------------- Seller Terms re-acceptance
+
+/// What a buyer is told when the seller hasn't accepted the current Seller Terms: no seller details.
+const NOT_AVAILABLE: &str = "This design isn't available to buy right now.";
+
+/// Whether `seller` may take new paid sales as far as the Seller Terms go: always before launch
+/// (nothing is recorded yet), after it only on the current version.
+async fn seller_accepted(state: &AppState, pool: &PgPool, seller: i64) -> bool {
+    !state.launched || crate::legal::accepted_current(pool, seller, &crate::legal::SELLER_TERMS).await
+}
+
+/// The banner and accept form shown to a seller on an old version of the Seller Terms; empty
+/// otherwise. `from` is where the form returns to: `selling` or `sales`.
+async fn terms_banner(state: &AppState, pool: &PgPool, account: i64, from: &str) -> String {
+    if seller(pool, account).await.is_none() || seller_accepted(state, pool, account).await {
+        return String::new();
+    }
+    format!(
+        r#"<section class="form"><p class="problem">The Seller Terms have changed. Accept the new version to take paid sales again.</p>
+<p><a href="/seller-terms">Read the Seller Terms</a></p>
+<form method="post" action="/account/selling/accept-terms"><input type="hidden" name="from" value="{from}"><p><label><input type="checkbox" name="agree" value="yes" required> I accept the new Seller Terms.</label></p><button type="submit">Accept</button></form></section>"#
+    )
+}
+
+#[derive(Deserialize)]
+pub struct Accept {
+    #[serde(default)]
+    agree: String,
+    #[serde(default)]
+    from: String,
+}
+
+/// A seller accepts the current Seller Terms (same-origin form, signed in, has a seller account).
+pub async fn accept_terms(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::Form(f): axum::Form<Accept>,
+) -> Response {
+    if !same_origin(&headers) {
+        return forbidden();
+    }
+    let (Some(user), Some(pool)) = (current_user(&state, &headers).await, state.db.as_ref()) else {
+        return Redirect::to("/signin").into_response();
+    };
+    if seller(pool, user.account_id).await.is_none() {
+        return forbidden();
+    }
+    if f.agree != "yes" {
+        return problem_page("Seller Terms", "Tick the box to accept the Seller Terms.");
+    }
+    crate::legal::agree(pool, user.account_id, &[&crate::legal::SELLER_TERMS]).await;
+    Redirect::to(if f.from == "sales" {
+        "/account/sales"
+    } else {
+        "/account/selling"
+    })
+    .into_response()
+}
+
 // ---------------------------------------------------------------- buying
 
 /// A buyer starts paying for design `id`: an order is made with its amounts fixed, then Stripe's
@@ -549,6 +612,11 @@ pub async fn buy(State(state): State<AppState>, headers: HeaderMap, Path(id): Pa
     };
     if bought(pool, user.account_id, id).await {
         return Redirect::to("/library").into_response();
+    }
+    // a seller who hasn't accepted the current Seller Terms takes no new paid sales (issue #96);
+    // nothing is made and Stripe isn't called
+    if !seller_accepted(&state, pool, d.account_id).await {
+        return problem_page("Buy a design", NOT_AVAILABLE);
     }
     if !state.limits.allow(limits::CHECKOUT, &user.account_id.to_string()) {
         return problem_page(
@@ -1249,10 +1317,11 @@ pub async fn sales(State(state): State<AppState>, headers: HeaderMap) -> Respons
             earned = dollars(earned),
         )
     };
+    let banner = terms_banner(&state, pool, user.account_id, "sales").await;
     private(
         "Your sales · MakerFoundry",
         &format!(
-            r#"<section class="design"><h1>Your sales</h1><p class="muted">Stripe pays your earnings into your bank once a month. <a href="/account/selling">Selling</a></p>{body}</section>"#
+            r#"{banner}<section class="design"><h1>Your sales</h1><p class="muted">Stripe pays your earnings into your bank once a month. <a href="/account/selling">Selling</a></p>{body}</section>"#
         ),
         true,
     )
@@ -1569,10 +1638,24 @@ pub async fn buy_html(
         format!(
             r#"<p class="actions"><a class="button" href="/d/{id}/download">Download</a> <span class="muted">You bought this</span>{licence}</p>"#
         )
+    } else if !seller_accepted_for(state, pool, id).await {
+        format!(r#"<p class="actions"><span class="muted">{NOT_AVAILABLE}</span>{licence}</p>"#)
     } else {
         format!(
             r#"<form method="post" action="/d/{id}/buy" class="actions"><button type="submit">Buy · {price_text}</button>{licence}</form>"#
         )
+    }
+}
+
+/// `seller_accepted` for design `id`'s seller; no seller found counts as not accepted.
+async fn seller_accepted_for(state: &AppState, pool: &PgPool, id: i64) -> bool {
+    match sqlx::query_scalar::<_, i64>("SELECT account_id FROM mf_designs WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+    {
+        Ok(a) => seller_accepted(state, pool, a).await,
+        Err(_) => false,
     }
 }
 
