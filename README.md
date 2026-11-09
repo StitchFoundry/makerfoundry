@@ -1,8 +1,8 @@
 # MakerFoundry
 
 A marketplace where makers share and sell **machine-embroidery designs** and **laser-cut
-files**: free designs shared openly, paid designs sold through MakerFoundry. By
-[SiteSentrix](https://sitesentrix.com), the makers of [StitchFoundry](https://stitchfoundry.app).
+files**: free designs shared openly, paid designs sold through MakerFoundry. Part of the
+[StitchFoundry](https://stitchfoundry.app) family.
 
 ## Status
 October 2026: **MF-0** (workspace) done: a Rust web service with a home page and `/health`, CI,

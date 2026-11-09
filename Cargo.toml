@@ -48,7 +48,7 @@ base64 = "0.22"
 flate2 = "1"
 crc32fast = "1"
 # StitchFoundry's embroidery file readers (DST, PES, JEF, EXP, VP3, XXX, U01 and more; fuzzed
-# there against untrusted bytes) and its stitch statistics. MIT OR Apache-2.0, by SiteSentrix.
+# there against untrusted bytes) and its stitch statistics. MIT OR Apache-2.0, by the StitchFoundry family.
 # Pinned by commit: bump on purpose.
 sf-formats = { git = "https://github.com/Stitchwright/StitchFoundry", rev = "ef43e6cb27314d2c9028ab0d50a1bb64804f4bbb" }
 sf-core = { git = "https://github.com/Stitchwright/StitchFoundry", rev = "ef43e6cb27314d2c9028ab0d50a1bb64804f4bbb" }
