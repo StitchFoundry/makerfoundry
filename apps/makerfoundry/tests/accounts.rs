@@ -3708,6 +3708,46 @@ async fn browse_shows_the_count_the_orders_and_the_newest_design_first() {
     assert!(!s.get("/browse?page=3", None).await.body.contains("Load more"));
 }
 
+/// #115: Trending counts saves of the last 7 days, Most saved counts all of them.
+#[tokio::test]
+async fn trending_counts_the_last_seven_days_and_most_saved_counts_all_time() {
+    let Some(s) = site().await else { return };
+    let ann = s.sign_up("ann%40example.com").await;
+    let old = published(&s, &ann, "anns", "Old+Favourite").await;
+    let fresh = published(&s, &ann, "anns", "Fresh+Find").await;
+    let (bea, cal) = (
+        s.sign_up("bea%40example.com").await,
+        s.sign_up("cal%40example.com").await,
+    );
+    // two people saved the old design, one the fresh one
+    for who in [&bea, &cal] {
+        s.post(&format!("/d/{old}/save"), "collection=", Some(who)).await;
+    }
+    s.post(&format!("/d/{fresh}/save"), "collection=", Some(&bea)).await;
+    // the old design's saves are three weeks old
+    sqlx::query("UPDATE mf_collection_items SET added_at = now() - interval '21 days' WHERE design_id = $1")
+        .bind(old)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    let order = |body: &str| (body.find(&format!("/d/{old}/")), body.find(&format!("/d/{fresh}/")));
+    let (o, f) = order(&s.get("/browse?sort=trending", None).await.body);
+    assert!(
+        f.is_some() && o.is_some() && f < o,
+        "Trending leads with the design saved this week"
+    );
+    let (o, f) = order(&s.get("/browse?sort=saved", None).await.body);
+    assert!(
+        f.is_some() && o.is_some() && o < f,
+        "Most saved still counts every save"
+    );
+    let home = s.get("/", None).await.body;
+    if let (Some(f), Some(o)) = (home.find(&format!("/d/{fresh}/")), home.find(&format!("/d/{old}/"))) {
+        assert!(f < o, "the home shelf is the same Trending");
+    }
+    assert!(home.contains("/browse?sort=trending"));
+}
+
 /// #115: 24 designs fill the first screen; "Load more" brings the rest into the same grid.
 #[tokio::test]
 async fn browse_loads_more_designs_into_the_same_grid() {
