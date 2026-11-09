@@ -125,7 +125,10 @@ mod tests {
         for signed_in in [false, true] {
             let html = page("Any", "<p>x</p>", signed_in);
             let footer = &html[html.find("<footer").expect("every page has a footer")..];
-            assert!(footer.contains(r#"part of the <a href="https://stitchfoundry.app/apps/">StitchFoundry</a> family"#), "{footer}");
+            assert!(
+                footer.contains(r#"part of the <a href="https://stitchfoundry.app/apps/">StitchFoundry</a> family"#),
+                "{footer}"
+            );
             for gone in ["SiteSentrix", "sitesentrix.com", "Stitchwright", "made by"] {
                 assert!(!footer.contains(gone), "{gone} must not be in the footer");
             }
