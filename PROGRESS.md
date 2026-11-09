@@ -1,5 +1,6 @@
 # Progress
 
+- 2026-11-09 #96: a seller who hasn't accepted the current Seller Terms takes no new paid sales: Buy makes no order and no Stripe call ("This design isn't available to buy right now."), the listing shows the same instead of a button, and the selling and sales pages show a banner with an accept form (`/account/selling/accept-terms`, same-origin checked). Free downloads, past purchases and listings are untouched. Enforced only after launch (agreements are recorded only then). Release note: once the seller-terms v3 text ships, every existing seller must re-accept before paid checkouts work.
 - 2026-11-09 nightly sweep: CI green with DB tests (local Postgres), cargo audit clean, no needs-triage issues; filed #118 (S1: two Buys at once could make two payable checkouts).
 - Fixed #118: Buy holds a per-buyer-and-design advisory lock, so a second Buy at the same moment is turned away instead of making a second checkout.
 - 2026-11-08 nightly sweep: no reports to triage; main CI green with DB tests, cargo audit clean; one finding sent to Bruce privately.

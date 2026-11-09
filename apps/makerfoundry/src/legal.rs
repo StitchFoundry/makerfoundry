@@ -97,6 +97,21 @@ pub async fn agree(pool: &PgPool, account: i64, docs: &[&Doc]) {
     }
 }
 
+/// Whether `account`'s latest agreement to `doc` is to its current version. A database error counts
+/// as "no": whatever this gates stays closed (issue #96).
+pub async fn accepted_current(pool: &PgPool, account: i64, doc: &Doc) -> bool {
+    sqlx::query_scalar::<_, String>(
+        "SELECT version FROM mf_agreements WHERE account_id = $1 AND document = $2 ORDER BY at DESC, version LIMIT 1",
+    )
+    .bind(account)
+    .bind(doc.id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .is_some_and(|v| v == doc.version())
+}
+
 async fn show(state: &AppState, headers: &HeaderMap, doc: &Doc) -> Response {
     let viewer = current_user(state, headers).await;
     let admin = viewer.as_ref().is_some_and(|u| state.admins.contains(&u.account_id));
