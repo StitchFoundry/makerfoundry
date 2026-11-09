@@ -1870,7 +1870,7 @@ async fn fake_stripe() -> (makerfoundry::stripe::Stripe, StripeShared) {
                     .refunds
                     .iter()
                     .filter(|f| f.get("payment_intent").map(|p| format!("ch_{p}")) == q.get("charge").cloned())
-                    .map(|f| json!({"id": "re_test_1", "object": "refund", "status": "succeeded", "metadata": {"order": f.get("metadata[order]")}}))
+                    .map(|f| json!({"id": "re_test_1", "object": "refund", "status": "succeeded", "metadata": {"order": f.get("metadata[order]"), "shop_order": f.get("metadata[shop_order]")}}))
                     .collect();
                 data.extend(st.listed_refunds.iter().filter(|r| r["charge"].as_str() == q.get("charge").map(String::as_str)).cloned());
                 Json(json!({"object": "list", "data": data}))
@@ -11488,6 +11488,79 @@ async fn a_cancelled_order_is_refunded_and_the_shop_is_out_only_the_card_fee() {
     s.post(&format!("{path}/cancel"), "reason=mistake", Some(&bea)).await;
     makerfoundry::shop_orders::sync(&state).await.unwrap();
     assert_eq!(sent_of(&hub, "order.cancel").len(), 1);
+}
+
+/// Issue #106: a shop order refunded in the Stripe Dashboard is settled as MakerFoundry's own
+/// refunds are: the transfer taken back from the shop if Stripe didn't, and the 10% given back.
+#[tokio::test]
+async fn a_shop_order_refunded_in_the_stripe_dashboard_takes_back_the_transfer_and_returns_the_fee() {
+    let Some((s, state, _hub, st)) = open_shop().await else {
+        return;
+    };
+    let (_bea, _path, _r) = paid_order(&s, &st).await;
+    // a part refunded first: nothing is taken from the shop for it (the admins are told)
+    let part = json!({"id": "ch_pi_cs_test_1", "object": "charge", "payment_intent": "pi_cs_test_1",
+        "refunded": false, "amount_refunded": 1_000});
+    s.stripe_event(WEBHOOK_SECRET, "evt_dash_part", "charge.refunded", part)
+        .await;
+    makerfoundry::shop_orders::after::sweep(&state).await.unwrap();
+    assert!(st.lock().unwrap().reversals.is_empty());
+    assert_eq!(s.scalar("SELECT sum(cents)::bigint FROM mf_shop_ledger").await, 24_349);
+    // then all of it, without "Reverse transfer" ticked
+    st.lock()
+        .unwrap()
+        .listed_refunds
+        .push(json!({"id": "re_dash_1", "object": "refund",
+        "charge": "ch_pi_cs_test_1", "amount": 24_349, "status": "succeeded", "metadata": {}}));
+    let full = json!({"id": "ch_pi_cs_test_1", "object": "charge", "payment_intent": "pi_cs_test_1",
+        "refunded": true, "amount_refunded": 24_349});
+    s.stripe_event(WEBHOOK_SECRET, "evt_dash_full", "charge.refunded", full)
+        .await;
+    makerfoundry::shop_orders::after::sweep(&state).await.unwrap();
+    makerfoundry::shop_orders::after::sweep(&state).await.unwrap();
+    let reversals = st.lock().unwrap().reversals.clone();
+    assert_eq!(reversals.len(), 1, "taken back once");
+    assert_eq!(reversals[0].0, "tr_pi_cs_test_1");
+    assert_eq!(reversals[0].1["amount"], "24349");
+    assert_eq!(reversals[0].1["metadata[reason]"], "shop_refund_re_dash_1");
+    let fee_refunds = st.lock().unwrap().fee_refunds.clone();
+    assert_eq!(fee_refunds.len(), 1);
+    assert_eq!(fee_refunds[0].1["amount"], "2435");
+    assert!(
+        st.lock().unwrap().refunds.is_empty(),
+        "MakerFoundry made no refund of its own"
+    );
+    // as for a refund made in MakerFoundry: the shop is out only the card fee
+    assert_eq!(s.scalar("SELECT sum(cents)::bigint FROM mf_shop_ledger").await, 0);
+    assert_eq!(
+        s.scalar("SELECT sum(cents)::bigint FROM mf_shop_ledger WHERE kind = 'shop'")
+            .await,
+        -736
+    );
+}
+
+/// Issue #106: with "Reverse transfer" ticked in the Dashboard, Stripe took the transfer back, so
+/// MakerFoundry doesn't again; the 10% still goes back to the shop.
+#[tokio::test]
+async fn a_dashboard_refund_with_the_transfer_reversed_only_returns_the_fee() {
+    let Some((s, state, _hub, st)) = open_shop().await else {
+        return;
+    };
+    paid_order(&s, &st).await;
+    st.lock()
+        .unwrap()
+        .listed_refunds
+        .push(json!({"id": "re_dash_2", "object": "refund",
+        "charge": "ch_pi_cs_test_1", "amount": 24_349, "status": "succeeded", "metadata": {},
+        "transfer_reversal": "trr_dash_2"}));
+    let full = json!({"id": "ch_pi_cs_test_1", "object": "charge", "payment_intent": "pi_cs_test_1",
+        "refunded": true, "amount_refunded": 24_349});
+    s.stripe_event(WEBHOOK_SECRET, "evt_dash_rev", "charge.refunded", full)
+        .await;
+    makerfoundry::shop_orders::after::sweep(&state).await.unwrap();
+    assert!(st.lock().unwrap().reversals.is_empty());
+    assert_eq!(st.lock().unwrap().fee_refunds.len(), 1);
+    assert_eq!(s.scalar("SELECT sum(cents)::bigint FROM mf_shop_ledger").await, 0);
 }
 
 #[tokio::test]
