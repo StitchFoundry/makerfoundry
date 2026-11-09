@@ -1041,6 +1041,9 @@ pub async fn webhook(State(state): State<AppState>, headers: HeaderMap, body: By
                 && let Some(intent) = event.pointer("/data/object/payment_intent").and_then(Value::as_str)
             {
                 crate::refunds::after_event(&state, pool, intent).await;
+                if new && let Some(charge) = event.pointer("/data/object") {
+                    crate::shop_orders::after::partly_refunded(&state, pool, charge).await;
+                }
             }
             if let Some(order) = paid_order(&event)
                 && let Err(e) = withhold_tax(stripe, pool, order).await
