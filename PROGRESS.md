@@ -2,6 +2,8 @@
 
 - 2026-11-09 nightly sweep: CI green with DB tests (local Postgres), cargo audit clean, no needs-triage issues; filed #118 (S1: two Buys at once could make two payable checkouts).
 - Fixed #118: Buy holds a per-buyer-and-design advisory lock, so a second Buy at the same moment is turned away instead of making a second checkout.
+- 2026-11-08 nightly sweep: no reports to triage; main CI green with DB tests, cargo audit clean; one finding sent to Bruce privately.
+- Fixed #106: a shop order refunded in the Stripe Dashboard has its transfer taken back (if Stripe didn't) and the 10% returned; a partial one alerts the admins.
 - 2026-11-07 #115 (first slice): `/browse` is a marketplace page: filters in a left panel (folds on a phone), a result count, four orders (Trending, Newest, Most downloaded, Most saved) and Load more into the same grid; tests that the newest design leads Browse and the home shelf at once. Trending is still most saved until the 7-day window (card slice). Left: design page, maker page, likes, 7-day trending.
 - 2026-11-07 nightly sweep: CI green (DB tests included), cargo audit clean; filed #105 (S1 double charge on a second Buy) and #106 (S2 shop-order Dashboard refunds).
 - Fixed #105: Buy closes the buyer's earlier open checkout at Stripe and refuses while an earlier payment is still being confirmed.
