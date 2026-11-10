@@ -2288,6 +2288,15 @@ async fn a_design_is_sold_paid_for_delivered_and_refunded() {
         sales.contains("$5 − fee $0.50 − card fee $0.45 = <strong>$4.05</strong>"),
         "{sales}"
     );
+    // when the money is available and when Stripe pays it (Seller Terms § 6)
+    assert!(
+        sales.contains("Available on 20") && sales.contains("Paid on (expected) 20"),
+        "{sales}"
+    );
+    assert!(
+        sales.contains("Payouts are made through Stripe once a month, generally on the 1st"),
+        "{sales}"
+    );
     // unpublished, it's still the buyer's; and it can't be deleted
     s.post(&format!("/designs/{id}/unpublish"), "", Some(&seller)).await;
     assert!(
@@ -2359,12 +2368,11 @@ async fn a_design_is_sold_paid_for_delivered_and_refunded() {
             .contains("/files/")
     );
     assert!(s.get("/library", Some(&buyer)).await.body.contains("Refunded"));
-    assert!(
-        s.get("/account/sales", Some(&seller))
-            .await
-            .body
-            .contains("<dd>-$0.45</dd>")
-    );
+    let sales = s.get("/account/sales", Some(&seller)).await.body;
+    assert!(sales.contains("<dd>-$0.45</dd>"));
+    // a refunded sale shows its status instead of payout dates
+    assert!(sales.contains("refunded") && !sales.contains("Available on"), "{sales}");
+    assert!(!sales.contains("Paid on (expected)"), "{sales}");
 }
 
 #[tokio::test]

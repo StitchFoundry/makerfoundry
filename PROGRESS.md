@@ -1,5 +1,6 @@
 # Progress
 
+- 2026-11-10 #97: the seller sales page shows, per paid sale, "Available on" (paid + the seller's hold days) and "Paid on (expected)" (next 1st after that, strictly after), plus a Seller Terms § 6 line; refunded, disputed and charged-back sales show their status only. Dates are UTC. Edge case unconfirmed in Stripe docs: money available exactly on a 1st is shown as paid the next 1st.
 - 2026-11-09 #96: a seller who hasn't accepted the current Seller Terms takes no new paid sales: Buy makes no order and no Stripe call ("This design isn't available to buy right now."), the listing shows the same instead of a button, and the selling and sales pages show a banner with an accept form (`/account/selling/accept-terms`, same-origin checked). Free downloads, past purchases and listings are untouched. Enforced only after launch (agreements are recorded only then). Release note: once the seller-terms v3 text ships, every existing seller must re-accept before paid checkouts work.
 - 2026-11-08 nightly sweep: no reports to triage; main CI green with DB tests, cargo audit clean; one finding sent to Bruce privately.
 - Fixed #106: a shop order refunded in the Stripe Dashboard has its transfer taken back (if Stripe didn't) and the 10% returned; a partial one alerts the admins.
