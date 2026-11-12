@@ -13351,3 +13351,19 @@ async fn a_free_design_from_a_seller_on_old_terms_still_downloads() {
     assert_eq!(dl.status, StatusCode::SEE_OTHER, "{}", dl.body);
     assert!(dl.location().contains("X-Amz-Signature="), "{}", dl.location());
 }
+
+/// #136: a contest's title is escaped in the page's `<title>` as well as its heading.
+#[tokio::test]
+async fn a_contest_title_is_escaped_in_the_page_title() {
+    let Some(s) = site_3d(vec![1000], true).await else {
+        return;
+    };
+    let admin = model_maker(&s, "admin%40example.com", "admin").await;
+    let (slug, _) = contest(&s, &admin, "Tea+%26+%3Cb%3Ecake%3C%2Fb%3E", "admins", true).await;
+    let page = s.get(&format!("/contests/{slug}"), None).await.body;
+    assert!(
+        page.contains("<title>Tea &amp; &lt;b&gt;cake&lt;/b&gt; · Contests · MakerFoundry</title>"),
+        "{page}"
+    );
+    assert!(!page.contains("<b>cake</b>"), "{page}");
+}
