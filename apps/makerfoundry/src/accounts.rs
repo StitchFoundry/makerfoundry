@@ -1,5 +1,5 @@
 //! Signing up, in and out, and a forgotten password (MF-1). Accounts are Foundry Accounts, the one
-//! login for all of SiteSentrix's software, kept by StitchFoundry's account service
+//! login for all of the Foundry apps, kept by StitchFoundry's account service
 //! (`cloud`); MakerFoundry keeps a session of its own for each browser (`db`), named by a random
 //! id in a `__Host-` cookie (HttpOnly, Secure, SameSite=Lax) and kept only as its SHA-256. Every
 //! form post must come from MakerFoundry's own pages (its `Origin`, or else its `Referer`).
