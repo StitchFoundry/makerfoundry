@@ -1312,6 +1312,61 @@ pub async fn library(State(state): State<AppState>, headers: HeaderMap, Query(q)
     )
 }
 
+// ---------------------------------------------------------------- when a sale is paid out
+
+/// Days since 1970-01-01 for a proportional Gregorian date (Hinnant's public-domain algorithm).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// The inverse of `days_from_civil`: (year, month, day).
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    (y, m, d)
+}
+
+/// `(available_on, paid_on)` for a sale paid on `paid` (`(year, month, day)`, UTC): the money is
+/// available `delay_days` later and Stripe pays it on the next 1st of a month (monthly schedule,
+/// anchor day 1). A sale that becomes available on a 1st is shown as paid on the *next* 1st
+/// ("strictly after"), so the page never promises an earlier date than Stripe keeps; Stripe's
+/// docs (https://docs.stripe.com/connect/manage-payout-schedule) don't spell out that edge.
+pub(crate) fn payout_dates(paid: (i64, i64, i64), delay_days: u32) -> ((i64, i64, i64), (i64, i64, i64)) {
+    let day = days_from_civil(paid.0, paid.1, paid.2) + i64::from(delay_days);
+    let available = civil_from_days(day);
+    let (y, m) = if available.1 >= 12 {
+        (available.0 + 1, 1)
+    } else {
+        (available.0, available.1 + 1)
+    };
+    (available, (y, m, 1))
+}
+
+fn parse_ymd(s: &str) -> Option<(i64, i64, i64)> {
+    let mut parts = s.split('-').map(|p| p.parse::<i64>().ok());
+    let (y, m, d) = (parts.next()??, parts.next()??, parts.next()??);
+    if parts.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    Some((y, m, d))
+}
+
+fn ymd_text((y, m, d): (i64, i64, i64)) -> String {
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
 // ---------------------------------------------------------------- the seller's sales
 
 pub async fn sales(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -1328,6 +1383,18 @@ pub async fn sales(State(state): State<AppState>, headers: HeaderMap) -> Respons
     .fetch_all(pool)
     .await
     .unwrap_or_default();
+    // the days this seller's money is held (their Stripe account's setting, else the site's)
+    let delay: u32 =
+        sqlx::query_scalar::<_, Option<i32>>("SELECT payout_delay_days FROM mf_sellers WHERE account_id = $1")
+            .bind(user.account_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .flatten()
+            .and_then(|d| u32::try_from(d).ok())
+            .or_else(|| state.stripe.as_ref().map(|s| s.payout_delay_days))
+            .unwrap_or(crate::stripe::DEFAULT_PAYOUT_DELAY_DAYS);
     // the totals come from the ledger, which refunds have already reversed
     let earned: i64 = sqlx::query_scalar(
         "SELECT coalesce(sum(cents), 0)::bigint FROM mf_ledger WHERE account_id = $1 AND kind = 'seller'",
@@ -1342,10 +1409,22 @@ pub async fn sales(State(state): State<AppState>, headers: HeaderMap) -> Respons
             let cents = |c: &str| dollars(r.try_get::<i64, _>(c).unwrap_or(0));
             let title: String = r.try_get("title").unwrap_or_default();
             let status: String = r.try_get("status").unwrap_or_default();
+            let at = r.try_get::<Option<String>, _>("at").ok().flatten().unwrap_or_default();
+            let dates = match (status.as_str(), parse_ymd(&at)) {
+                ("paid", Some(paid)) => {
+                    let (available, payout) = payout_dates(paid, delay);
+                    format!(
+                        r#"<p class="muted">Available on {} · Paid on (expected) {}</p>"#,
+                        ymd_text(available),
+                        ymd_text(payout)
+                    )
+                }
+                _ => String::new(),
+            };
             format!(
-                r#"<li class="report"><p><strong>{title}</strong> <span class="muted">· {at}{refunded}</span></p><p>{price} − fee {fee} − card fee {card} = <strong>{you}</strong></p></li>"#,
+                r#"<li class="report"><p><strong>{title}</strong> <span class="muted">· {at}{refunded}</span></p><p>{price} − fee {fee} − card fee {card} = <strong>{you}</strong></p>{dates}</li>"#,
                 title = escape(&title),
-                at = escape(&r.try_get::<Option<String>, _>("at").ok().flatten().unwrap_or_default()),
+                at = escape(&at),
                 refunded = match status.as_str() {
                     "refunded" => " · refunded: the card fee stays with Stripe",
                     "disputed" => " · disputed by the buyer: the price is taken back until the dispute closes",
@@ -1363,7 +1442,7 @@ pub async fn sales(State(state): State<AppState>, headers: HeaderMap) -> Respons
         r#"<p class="lead">No sales yet.</p>"#.to_string()
     } else {
         format!(
-            r#"<dl class="facts"><div><dt>Sales</dt><dd>{n}</dd></div><div><dt>Your earnings</dt><dd>{earned}</dd></div></dl><ul class="reports">{lines}</ul>"#,
+            r#"<dl class="facts"><div><dt>Sales</dt><dd>{n}</dd></div><div><dt>Your earnings</dt><dd>{earned}</dd></div></dl><ul class="reports">{lines}</ul><p class="muted">Payouts are made through Stripe once a month, generally on the 1st, for sales at least {delay} days old (Seller Terms § 6). Bank and Stripe timing can vary.</p>"#,
             n = rows.len(),
             earned = dollars(earned),
         )
@@ -1736,6 +1815,30 @@ mod tests {
         assert!(check_price("0.50").is_err());
         assert!(check_price("201").is_err());
         assert!(check_price("abc").is_err());
+    }
+
+    #[test]
+    fn payouts_are_on_the_next_first_after_the_hold() {
+        let d = |y, m, d| (y, m, d);
+        assert_eq!(payout_dates(d(2026, 10, 1), 14), (d(2026, 10, 15), d(2026, 11, 1)));
+        assert_eq!(payout_dates(d(2026, 10, 10), 14), (d(2026, 10, 24), d(2026, 11, 1)));
+        assert_eq!(payout_dates(d(2026, 10, 20), 14), (d(2026, 11, 3), d(2026, 12, 1)));
+        assert_eq!(payout_dates(d(2026, 10, 31), 14), (d(2026, 11, 14), d(2026, 12, 1)));
+        // the year rolls over
+        assert_eq!(payout_dates(d(2026, 12, 20), 14), (d(2027, 1, 3), d(2027, 2, 1)));
+        assert_eq!(payout_dates(d(2026, 12, 1), 14), (d(2026, 12, 15), d(2027, 1, 1)));
+        // no hold; and a leap day
+        assert_eq!(payout_dates(d(2026, 10, 5), 0), (d(2026, 10, 5), d(2026, 11, 1)));
+        assert_eq!(payout_dates(d(2028, 2, 20), 10), (d(2028, 3, 1), d(2028, 4, 1)));
+    }
+
+    #[test]
+    fn dates_are_read_and_written_as_yyyy_mm_dd() {
+        assert_eq!(parse_ymd("2026-11-09"), Some((2026, 11, 9)));
+        for bad in ["", "2026-13-01", "2026-11", "2026-11-09-1", "x-y-z", "2026-00-10"] {
+            assert_eq!(parse_ymd(bad), None, "{bad}");
+        }
+        assert_eq!(ymd_text((2027, 2, 1)), "2027-02-01");
     }
 
     #[test]
