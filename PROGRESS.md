@@ -1,5 +1,6 @@
 # Progress
 
+- Fixed #125: signing up from `/founding` sets a 30-day cookie; the account page then shows "One more step: send your founding creator application" until an application exists, and `/admin/founding` lists accounts from the last 30 days that haven't applied (handle or account number, no email addresses). `next=/founding` already survived signup (no email-verification step exists); the test now covers it. DB test added.
 - 2026-11-13 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests; cargo audit shows only the known #126 (plus a dev-only rustix "unsound" warning); no new findings filed.
 - Fixed #139: an import's bulk publish checks each draft's licence against its parents (as a model's own publish does); a remix the parent's licence forbids stays a draft and is named with the reason.
 - 2026-11-12 nightly sweep: CI green with DB tests, cargo audit shows only the known #126; no needs-triage issues; filed one import-publish licence finding, one sent to Bruce privately.

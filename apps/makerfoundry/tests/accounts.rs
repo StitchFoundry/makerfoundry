@@ -13454,3 +13454,79 @@ async fn a_contest_title_is_escaped_in_the_page_title() {
     );
     assert!(!page.contains("<b>cake</b>"), "{page}");
 }
+
+// ---------------------------------------------------------------- founding: signed up, not applied
+
+#[tokio::test]
+async fn a_founding_signup_lands_on_the_form_is_reminded_and_shows_to_admins_until_applied() {
+    let Some(s) = site_with(vec![1000]).await else { return };
+    let admin = s.sign_up("ada%40example.com").await;
+    // signing up from the founding page goes back to the form, and leaves the reminder cookie
+    let r = s
+        .post(
+            "/signup",
+            "email=eli%40example.com&password=fire+truck+1&again=fire+truck+1&agree=yes&next=%2Ffounding",
+            None,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    assert_eq!(r.headers.get(header::LOCATION).unwrap(), "/founding");
+    let cookies: Vec<_> = r
+        .headers
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .collect();
+    assert!(
+        cookies.iter().any(|c| c.starts_with("mf_founding_intent=1;")),
+        "{cookies:?}"
+    );
+    let eli = r.cookie();
+    let with_intent = format!("{eli}; mf_founding_intent=1");
+    assert!(
+        s.get("/founding", Some(&eli))
+            .await
+            .body
+            .contains("Apply to be a founding creator")
+    );
+    // the account page nudges until the application is sent
+    let account = s.get("/account", Some(&with_intent)).await.body;
+    assert!(account.contains("One more step"), "{account}");
+    // a sign-up from anywhere else leaves no cookie and no nudge
+    let r = s
+        .post(
+            "/signup",
+            "email=flo%40example.com&password=fire+truck+1&again=fire+truck+1&agree=yes",
+            None,
+        )
+        .await;
+    assert!(r.headers.get_all(header::SET_COOKIE).iter().count() == 1);
+    assert!(
+        !s.get("/account", Some(&r.cookie()))
+            .await
+            .body
+            .contains("One more step")
+    );
+    // admins see who signed up and has not applied (no email addresses)
+    let queue = s.get("/admin/founding", Some(&admin)).await.body;
+    assert!(
+        queue.contains("Signed up but not applied") && queue.contains("Account 1001") && !queue.contains("eli@"),
+        "{queue}"
+    );
+    // after applying: no nudge, and off the list
+    s.post("/founding", "name=Eli&about=Laser", Some(&eli)).await;
+    assert!(
+        !s.get("/account", Some(&with_intent))
+            .await
+            .body
+            .contains("One more step")
+    );
+    let queue = s.get("/admin/founding", Some(&admin)).await.body;
+    let after = queue.split("Signed up but not applied").nth(1).unwrap_or("");
+    assert!(
+        !after.contains("Account 1001") && after.contains("Account 1002"),
+        "{queue}"
+    );
+    // not for non-admins
+    assert_eq!(s.get("/admin/founding", Some(&eli)).await.status, StatusCode::NOT_FOUND);
+}
