@@ -44,7 +44,7 @@ pub const SCREENFOUNDRY_WEB: &str = "https://app.screenfoundry.app/";
 /// site allowed in `MF_API_ORIGINS`) and showed MakerFoundry's own sentence for one that isn't there.
 pub const SCREENFOUNDRY_OPENS_LINKS: bool = true;
 
-/// PatternFoundry's web app (sewing patterns, SiteSentrix; MF-89, issue #47), which opens SVG
+/// PatternFoundry's web app (sewing patterns, StitchFoundry family; MF-89, issue #47), which opens SVG
 /// designs from `?open=` the same way. Until MakerFoundry has a sewing-pattern kind, patterns come
 /// as SVG vector designs.
 pub const PATTERNFOUNDRY_WEB: &str = "https://stitchfoundry.github.io/patternfoundry/";

@@ -624,8 +624,59 @@ pub async fn buy(State(state): State<AppState>, headers: HeaderMap, Path(id): Pa
             "You've started a lot of purchases in the last hour. Please wait a while and try again.",
         );
     }
+    // one Buy at a time per buyer and design (issue #118): two at once (a double-click, two tabs)
+    // would each find no checkout to close and each make one, both payable
+    let mut lock = match pool.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            eprintln!("selling: buy lock for {id}: {e}");
+            return problem_page(
+                "Buy a design",
+                "Your purchase couldn't be started just now. Please try again.",
+            );
+        }
+    };
+    let locked: Result<bool, _> = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(buy_lock_key(user.account_id, id))
+        .fetch_one(&mut *lock)
+        .await;
+    let response = match locked {
+        Ok(true) => buy_locked(&state, pool, stripe, &user, id, &d).await,
+        Ok(false) => problem_page(
+            "Buy a design",
+            "Your purchase of this design is already being started (in another tab, or the button was pressed twice). Please wait a moment and check your library or try again.",
+        ),
+        Err(e) => {
+            eprintln!("selling: buy lock for {id}: {e}");
+            problem_page(
+                "Buy a design",
+                "Your purchase couldn't be started just now. Please try again.",
+            )
+        }
+    };
+    // (rolled back now, not when the connection is next used, so the lock is let go at once)
+    if let Err(e) = lock.rollback().await {
+        eprintln!("selling: buy lock for {id}: {e}");
+    }
+    response
+}
+
+/// The advisory lock's name for `buyer` buying design `design` (`buy`).
+pub fn buy_lock_key(buyer: i64, design: i64) -> String {
+    format!("mf-buy-{buyer}-{design}")
+}
+
+/// `buy`, once it holds the lock for this buyer and design.
+async fn buy_locked(
+    state: &AppState,
+    pool: &PgPool,
+    stripe: &Stripe,
+    user: &User,
+    id: i64,
+    d: &designs::DesignRow,
+) -> Response {
     // an earlier checkout of theirs for it is closed first, so it's never paid twice (issue #105)
-    match close_open(&state, pool, id, Some(user.account_id)).await {
+    match close_open(state, pool, id, Some(user.account_id)).await {
         Ok(()) => {}
         Err(Closing::Paying) => {
             return problem_page(

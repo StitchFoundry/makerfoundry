@@ -12873,6 +12873,47 @@ async fn buying_again_closes_the_earlier_checkout_and_never_charges_twice() {
     assert_eq!(st.lock().unwrap().sessions.len(), 3);
 }
 
+/// Issue #118: two Buy requests from one buyer for one design at the same moment (a double-click,
+/// two tabs) never make two payable checkouts: while one is starting, the other is turned away.
+#[tokio::test]
+async fn two_buys_at_once_never_make_two_checkouts() {
+    let Some((s, st, _seller, id)) = selling_site(Vec::new()).await else {
+        return;
+    };
+    let bea = s.sign_up("bea%40example.com").await;
+    let buyer = s
+        .scalar("SELECT account_id FROM mf_accounts WHERE email = 'bea@example.com'")
+        .await;
+    // another Buy of bea's for this design is part-way through (it holds the lock)
+    let mut other = s.pool.acquire().await.unwrap();
+    sqlx::query("SELECT pg_advisory_lock(hashtextextended($1, 0))")
+        .bind(makerfoundry::selling::buy_lock_key(buyer, id))
+        .execute(&mut *other)
+        .await
+        .unwrap();
+    let r = s.post(&format!("/d/{id}/buy"), "", Some(&bea)).await;
+    assert!(r.body.contains("already being started"), "{}", r.body);
+    assert_eq!(st.lock().unwrap().sessions.len(), 0, "no second checkout");
+    assert_eq!(s.scalar("SELECT count(*) FROM mf_orders").await, 0);
+    // someone else buying it isn't held up
+    let cal = s.sign_up("cal%40example.com").await;
+    let r = s.post(&format!("/d/{id}/buy"), "", Some(&cal)).await;
+    assert!(r.location().ends_with("cs_test_1"), "{}", r.location());
+    // once the other has finished, bea can buy, and the lock is let go straight after
+    sqlx::query("SELECT pg_advisory_unlock_all()")
+        .execute(&mut *other)
+        .await
+        .unwrap();
+    let r = s.post(&format!("/d/{id}/buy"), "", Some(&bea)).await;
+    assert!(r.location().ends_with("cs_test_2"), "{}", r.location());
+    let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock(hashtextextended($1, 0))")
+        .bind(makerfoundry::selling::buy_lock_key(buyer, id))
+        .fetch_one(&mut *other)
+        .await
+        .unwrap();
+    assert!(free, "the lock is let go when Buy is done");
+}
+
 #[tokio::test]
 async fn deleting_your_data_closes_checkouts_for_your_designs() {
     let Some((s, st, seller, id)) = selling_site(Vec::new()).await else {
@@ -13349,4 +13390,20 @@ async fn a_free_design_from_a_seller_on_old_terms_still_downloads() {
     let dl = s.get(&format!("/d/{id}/download"), None).await;
     assert_eq!(dl.status, StatusCode::SEE_OTHER, "{}", dl.body);
     assert!(dl.location().contains("X-Amz-Signature="), "{}", dl.location());
+}
+
+/// #136: a contest's title is escaped in the page's `<title>` as well as its heading.
+#[tokio::test]
+async fn a_contest_title_is_escaped_in_the_page_title() {
+    let Some(s) = site_3d(vec![1000], true).await else {
+        return;
+    };
+    let admin = model_maker(&s, "admin%40example.com", "admin").await;
+    let (slug, _) = contest(&s, &admin, "Tea+%26+%3Cb%3Ecake%3C%2Fb%3E", "admins", true).await;
+    let page = s.get(&format!("/contests/{slug}"), None).await.body;
+    assert!(
+        page.contains("<title>Tea &amp; &lt;b&gt;cake&lt;/b&gt; · Contests · MakerFoundry</title>"),
+        "{page}"
+    );
+    assert!(!page.contains("<b>cake</b>"), "{page}");
 }
