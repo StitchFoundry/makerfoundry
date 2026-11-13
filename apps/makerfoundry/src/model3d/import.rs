@@ -755,8 +755,8 @@ pub async fn publish(
     if crate::makers::profile(&pool, user.account_id).await.is_none() {
         return again("Set up your maker profile first: it's the name people see on your models.".into()).await;
     }
-    let drafts: Vec<(i64, String, bool, i64)> = sqlx::query_as(
-        "SELECT id, title, (title <> '' AND category IS NOT NULL AND licence IS NOT NULL), price_cents
+    let drafts: Vec<(i64, String, bool, i64, Option<String>)> = sqlx::query_as(
+        "SELECT id, title, (title <> '' AND category IS NOT NULL AND licence IS NOT NULL), price_cents, licence
          FROM mf_designs WHERE import_id = $1 AND account_id = $2 AND status = 'draft' ORDER BY title",
     )
     .bind(id)
@@ -767,9 +767,16 @@ pub async fn publish(
     let can_sell = crate::selling::can_sell(&state, &pool, user.account_id).await;
     let mut waiting = Vec::new();
     let mut published = 0;
-    for (did, title, ready, price) in drafts {
+    for (did, title, ready, price, licence) in drafts {
+        // a remix's licence has to be one its parents allow, as on a model's own publish (#139)
+        let refused = match licence.as_deref() {
+            Some(l) if ready => super::remix::check_licence(&pool, did, user.account_id, l).await.err(),
+            _ => None,
+        };
         if !ready {
             waiting.push(format!("{title} needs a category and a licence"));
+        } else if let Some(why) = refused {
+            waiting.push(format!("{title}: {}", why.trim_end_matches('.')));
         } else if price > 0 && !can_sell {
             waiting.push(format!("{title} has a price: finish setting up selling first"));
         } else if sqlx::query(

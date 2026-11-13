@@ -7235,6 +7235,53 @@ async fn bulk_publish_needs_the_confirmation_and_every_draft_its_details() {
     );
 }
 
+/// #139: an import's bulk publish checks each draft's licence against its parents, as a
+/// model's own publish does.
+#[tokio::test]
+async fn bulk_publish_holds_back_a_remix_its_parents_licence_forbids() {
+    let Some(s) = site_3d(Vec::new(), true).await else {
+        return;
+    };
+    let ann = model_maker(&s, "ann%40example.com", "ann").await;
+    let gear = licensed_model(&s, &ann, "Gear", "cc-by-sa").await;
+    let (cookie, iid) = three_model_import(&s).await;
+    s.post(&format!("/3d/import/{iid}/drafts"), "", Some(&cookie)).await;
+    let lamp: i64 = sqlx::query_scalar("SELECT id FROM mf_designs WHERE title = 'lamp'")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    let r = add_parent(&s, &cookie, lamp, &gear.to_string()).await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER, "{}", r.body);
+    s.post(
+        &format!("/3d/import/{iid}/details"),
+        "category=household&licence=cc-by",
+        Some(&cookie),
+    )
+    .await;
+    let r = s
+        .post(&format!("/3d/import/{iid}/publish"), "confirm=yes", Some(&cookie))
+        .await;
+    assert!(
+        r.body.contains("lamp: Gear is licensed") && r.body.contains("ShareAlike"),
+        "{}",
+        r.body
+    );
+    assert_eq!(
+        s.scalar(&format!(
+            "SELECT count(*) FROM mf_designs WHERE id = {lamp} AND status = 'draft'"
+        ))
+        .await,
+        1,
+        "the remix stays a draft"
+    );
+    assert_eq!(
+        s.scalar("SELECT count(*) FROM mf_designs WHERE import_id IS NOT NULL AND status = 'published'")
+            .await,
+        2,
+        "the others are published"
+    );
+}
+
 #[tokio::test]
 async fn an_origin_address_on_another_site_is_refused_and_a_good_one_shows() {
     let Some(s) = site_3d(Vec::new(), true).await else {
