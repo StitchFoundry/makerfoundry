@@ -124,7 +124,7 @@ LaserFoundry's side, by its own rules (its `CLAUDE.md`, its own task id), as Sti
 Once it ships, tell the MakerFoundry chat to switch the button on.
 
 ## For ScreenFoundry (MF-87): Open in ScreenFoundry, and publishing
-ScreenFoundry (screen-printing prepress, Stitchwright; its side is SC-11) opens **SVG only**.
+ScreenFoundry (screen-printing prepress, StitchFoundry family; its side is SC-11) opens **SVG only**.
 
 - **The button** shows on the page of a free, published SVG design (a paid one: for its buyers,
   its maker and the admins, through `/d/<id>/open?app=screenfoundry`, which makes the ten-minute

@@ -3708,6 +3708,46 @@ async fn browse_shows_the_count_the_orders_and_the_newest_design_first() {
     assert!(!s.get("/browse?page=3", None).await.body.contains("Load more"));
 }
 
+/// #115: Trending counts saves of the last 7 days, Most saved counts all of them.
+#[tokio::test]
+async fn trending_counts_the_last_seven_days_and_most_saved_counts_all_time() {
+    let Some(s) = site().await else { return };
+    let ann = s.sign_up("ann%40example.com").await;
+    let old = published(&s, &ann, "anns", "Old+Favourite").await;
+    let fresh = published(&s, &ann, "anns", "Fresh+Find").await;
+    let (bea, cal) = (
+        s.sign_up("bea%40example.com").await,
+        s.sign_up("cal%40example.com").await,
+    );
+    // two people saved the old design, one the fresh one
+    for who in [&bea, &cal] {
+        s.post(&format!("/d/{old}/save"), "collection=", Some(who)).await;
+    }
+    s.post(&format!("/d/{fresh}/save"), "collection=", Some(&bea)).await;
+    // the old design's saves are three weeks old
+    sqlx::query("UPDATE mf_collection_items SET added_at = now() - interval '21 days' WHERE design_id = $1")
+        .bind(old)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    let order = |body: &str| (body.find(&format!("/d/{old}/")), body.find(&format!("/d/{fresh}/")));
+    let (o, f) = order(&s.get("/browse?sort=trending", None).await.body);
+    assert!(
+        f.is_some() && o.is_some() && f < o,
+        "Trending leads with the design saved this week"
+    );
+    let (o, f) = order(&s.get("/browse?sort=saved", None).await.body);
+    assert!(
+        f.is_some() && o.is_some() && o < f,
+        "Most saved still counts every save"
+    );
+    let home = s.get("/", None).await.body;
+    if let (Some(f), Some(o)) = (home.find(&format!("/d/{fresh}/")), home.find(&format!("/d/{old}/"))) {
+        assert!(f < o, "the home shelf is the same Trending");
+    }
+    // (a young site shows no shelves at all, so the home page is only checked when it has them)
+}
+
 /// #115: 24 designs fill the first screen; "Load more" brings the rest into the same grid.
 #[tokio::test]
 async fn browse_loads_more_designs_into_the_same_grid() {
@@ -7192,6 +7232,53 @@ async fn bulk_publish_needs_the_confirmation_and_every_draft_its_details() {
         s.scalar("SELECT count(*) FROM mf_agreements WHERE document = 'seller-terms'")
             .await,
         1
+    );
+}
+
+/// #139: an import's bulk publish checks each draft's licence against its parents, as a
+/// model's own publish does.
+#[tokio::test]
+async fn bulk_publish_holds_back_a_remix_its_parents_licence_forbids() {
+    let Some(s) = site_3d(Vec::new(), true).await else {
+        return;
+    };
+    let ann = model_maker(&s, "ann%40example.com", "ann").await;
+    let gear = licensed_model(&s, &ann, "Gear", "cc-by-sa").await;
+    let (cookie, iid) = three_model_import(&s).await;
+    s.post(&format!("/3d/import/{iid}/drafts"), "", Some(&cookie)).await;
+    let lamp: i64 = sqlx::query_scalar("SELECT id FROM mf_designs WHERE title = 'lamp'")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    let r = add_parent(&s, &cookie, lamp, &gear.to_string()).await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER, "{}", r.body);
+    s.post(
+        &format!("/3d/import/{iid}/details"),
+        "category=household&licence=cc-by",
+        Some(&cookie),
+    )
+    .await;
+    let r = s
+        .post(&format!("/3d/import/{iid}/publish"), "confirm=yes", Some(&cookie))
+        .await;
+    assert!(
+        r.body.contains("lamp: Gear is licensed") && r.body.contains("ShareAlike"),
+        "{}",
+        r.body
+    );
+    assert_eq!(
+        s.scalar(&format!(
+            "SELECT count(*) FROM mf_designs WHERE id = {lamp} AND status = 'draft'"
+        ))
+        .await,
+        1,
+        "the remix stays a draft"
+    );
+    assert_eq!(
+        s.scalar("SELECT count(*) FROM mf_designs WHERE import_id IS NOT NULL AND status = 'published'")
+            .await,
+        2,
+        "the others are published"
     );
 }
 
@@ -13375,4 +13462,96 @@ async fn a_free_design_from_a_seller_on_old_terms_still_downloads() {
     let dl = s.get(&format!("/d/{id}/download"), None).await;
     assert_eq!(dl.status, StatusCode::SEE_OTHER, "{}", dl.body);
     assert!(dl.location().contains("X-Amz-Signature="), "{}", dl.location());
+}
+
+/// #136: a contest's title is escaped in the page's `<title>` as well as its heading.
+#[tokio::test]
+async fn a_contest_title_is_escaped_in_the_page_title() {
+    let Some(s) = site_3d(vec![1000], true).await else {
+        return;
+    };
+    let admin = model_maker(&s, "admin%40example.com", "admin").await;
+    let (slug, _) = contest(&s, &admin, "Tea+%26+%3Cb%3Ecake%3C%2Fb%3E", "admins", true).await;
+    let page = s.get(&format!("/contests/{slug}"), None).await.body;
+    assert!(
+        page.contains("<title>Tea &amp; &lt;b&gt;cake&lt;/b&gt; · Contests · MakerFoundry</title>"),
+        "{page}"
+    );
+    assert!(!page.contains("<b>cake</b>"), "{page}");
+}
+
+// ---------------------------------------------------------------- founding: signed up, not applied
+
+#[tokio::test]
+async fn a_founding_signup_lands_on_the_form_is_reminded_and_shows_to_admins_until_applied() {
+    let Some(s) = site_with(vec![1000]).await else { return };
+    let admin = s.sign_up("ada%40example.com").await;
+    // signing up from the founding page goes back to the form, and leaves the reminder cookie
+    let r = s
+        .post(
+            "/signup",
+            "email=eli%40example.com&password=fire+truck+1&again=fire+truck+1&agree=yes&next=%2Ffounding",
+            None,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    assert_eq!(r.headers.get(header::LOCATION).unwrap(), "/founding");
+    let cookies: Vec<_> = r
+        .headers
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .collect();
+    assert!(
+        cookies.iter().any(|c| c.starts_with("mf_founding_intent=1;")),
+        "{cookies:?}"
+    );
+    let eli = r.cookie();
+    let with_intent = format!("{eli}; mf_founding_intent=1");
+    assert!(
+        s.get("/founding", Some(&eli))
+            .await
+            .body
+            .contains("Apply to be a founding creator")
+    );
+    // the account page nudges until the application is sent
+    let account = s.get("/account", Some(&with_intent)).await.body;
+    assert!(account.contains("One more step"), "{account}");
+    // a sign-up from anywhere else leaves no cookie and no nudge
+    let r = s
+        .post(
+            "/signup",
+            "email=flo%40example.com&password=fire+truck+1&again=fire+truck+1&agree=yes",
+            None,
+        )
+        .await;
+    assert!(r.headers.get_all(header::SET_COOKIE).iter().count() == 1);
+    assert!(
+        !s.get("/account", Some(&r.cookie()))
+            .await
+            .body
+            .contains("One more step")
+    );
+    // admins see who signed up and has not applied (no email addresses)
+    let queue = s.get("/admin/founding", Some(&admin)).await.body;
+    assert!(
+        queue.contains("Signed up but not applied") && queue.contains("Account 1001") && !queue.contains("eli@"),
+        "{queue}"
+    );
+    // after applying: no nudge, and off the list
+    s.post("/founding", "name=Eli&about=Laser", Some(&eli)).await;
+    assert!(
+        !s.get("/account", Some(&with_intent))
+            .await
+            .body
+            .contains("One more step")
+    );
+    let queue = s.get("/admin/founding", Some(&admin)).await.body;
+    let after = queue.split("Signed up but not applied").nth(1).unwrap_or("");
+    assert!(
+        !after.contains("Account 1001") && after.contains("Account 1002"),
+        "{queue}"
+    );
+    // not for non-admins
+    assert_eq!(s.get("/admin/founding", Some(&eli)).await.status, StatusCode::NOT_FOUND);
 }

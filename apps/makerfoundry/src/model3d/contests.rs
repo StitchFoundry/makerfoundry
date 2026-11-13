@@ -266,7 +266,7 @@ async fn contest_page(state: &AppState, pool: &PgPool, user: Option<&User>, c: &
     };
     let _ = state;
     private(
-        &format!("{} · Contests · MakerFoundry", c.title),
+        &format!("{} · Contests · MakerFoundry", escape(&c.title)),
         &format!(
             r#"<section class="design"><p><a href="/contests">Contests</a></p><h1>{title}</h1><p class="lead">{theme}</p><p>{when}</p>{problem}
 {enter}<h2>Entries</h2>{entries_html}<h2>Rules</h2>{rules}</section>"#,
