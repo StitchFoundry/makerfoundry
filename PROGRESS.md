@@ -1,6 +1,8 @@
 # Progress
 
 - 2026-11-10 #97: the seller sales page shows, per paid sale, "Available on" (paid + the seller's hold days) and "Paid on (expected)" (next 1st after that, strictly after), plus a Seller Terms § 6 line; refunded, disputed and charged-back sales show their status only. Dates are UTC. Edge case unconfirmed in Stripe docs: money available exactly on a 1st is shown as paid the next 1st.
+- 2026-11-11 nightly sweep: CI green with DB tests (local Postgres); cargo audit shows only the known #126 (libsqlite3-sys, not compiled); no needs-triage issues; filed #135 (S2), #136 and #137 (S4).
+- Fixed #135: naming a parent for a published 3D model now checks the model's current licence against the parent's terms (drafts are still checked at publish).
 - Fixed #125: signing up from `/founding` sets a 30-day cookie; the account page then shows "One more step: send your founding creator application" until an application exists, and `/admin/founding` lists accounts from the last 30 days that haven't applied (handle or account number, no email addresses). `next=/founding` already survived signup (no email-verification step exists); the test now covers it. DB test added.
 - Fixed #126: `cargo audit` ignores RUSTSEC-2026-0459 (libsqlite3-sys is in Cargo.lock only through the unbuilt optional sqlx-sqlite) in `.cargo/audit.toml`, with the reason and a removal date of 2027-01-11 (Bruce approved 2026-11-12). Cargo.lock unchanged.
 - 2026-11-13 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests; cargo audit shows only the known #126 (plus a dev-only rustix "unsound" warning); no new findings filed.

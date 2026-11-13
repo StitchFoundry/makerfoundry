@@ -254,7 +254,7 @@ pub async fn add_parent(
     if !same_origin(&headers) {
         return forbidden();
     }
-    let (user, pool, _) = match super::upload::own_model(&state, &headers, id).await {
+    let (user, pool, model) = match super::upload::own_model(&state, &headers, id).await {
         Ok(o) => o,
         Err(r) => return r,
     };
@@ -323,6 +323,13 @@ pub async fn add_parent(
             parent.title
         ))
         .await;
+    }
+    // a model already out (not a draft, which is checked when published) must keep to every
+    // parent's terms under the licence it has now (issue #135)
+    if model.status != "draft"
+        && let Err(why) = check(&rules, model.licence.as_deref().unwrap_or(""))
+    {
+        return again(why).await;
     }
     if let Err(e) = sqlx::query("INSERT INTO mf_remixes (child_id, parent_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
         .bind(id)
