@@ -336,7 +336,15 @@ pub async fn signup(State(state): State<AppState>, headers: HeaderMap, Form(form
     }
     let result = match state.cloud.signup(form.email.trim(), &form.password).await {
         Ok((token, account)) => {
-            let started = start_session(&state, &token, &account, &form.next).await;
+            let mut started = start_session(&state, &token, &account, &form.next).await;
+            // remember that this sign-up came from the founding page, so the account page can
+            // remind them to send the application (see `founding::reminder`)
+            if let (Ok(resp), true) = (started.as_mut(), safe_next(&form.next) == "/founding") {
+                resp.headers_mut().append(
+                    header::SET_COOKIE,
+                    HeaderValue::from_static(crate::founding::INTENT_COOKIE_SET),
+                );
+            }
             if let (true, Ok(_), Some(pool)) = (state.launched, &started, state.db.as_ref()) {
                 crate::legal::agree(pool, account.id, &[&crate::legal::TERMS, &crate::legal::PRIVACY]).await;
             }
@@ -440,6 +448,7 @@ pub async fn account_page(State(state): State<AppState>, headers: HeaderMap) -> 
         None => String::new(),
     };
     let founding_waiting = crate::founding::waiting_link(&state, user.account_id).await;
+    let reminder = crate::founding::reminder(&state, &headers, user.account_id).await;
     let proofs = if crate::proofs::available(&state, &user) {
         r#"<p><a href="/proofs">Proofs</a>: send a customer a design to approve before you stitch or cut it.</p>"#
     } else {
@@ -474,6 +483,7 @@ pub async fn account_page(State(state): State<AppState>, headers: HeaderMap) -> 
             r#"<section class="form">
 <h1>Your account</h1>
 <p class="lead">You're signed in as <strong>{email}</strong>, with your Foundry Account.</p>
+{reminder}
 <p><a href="/designs">Your designs</a>: add a design file and photos of what it makes.</p>
 {founding}
 {founding_waiting}
