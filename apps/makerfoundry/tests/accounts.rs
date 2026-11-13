@@ -7813,6 +7813,31 @@ async fn by_sa_forces_by_sa_and_the_link_shows_both_ways() {
 }
 
 #[tokio::test]
+async fn a_published_model_cant_name_a_parent_its_licence_breaks() {
+    // issue #135: the parent check ran only at save and publish, so a published model kept a
+    // licence its new parent forbids
+    let Some(s) = site_3d(Vec::new(), true).await else {
+        return;
+    };
+    let ann = model_maker(&s, "ann%40example.com", "ann").await;
+    let bob = model_maker(&s, "bob%40example.com", "bob").await;
+    let gear = licensed_model(&s, &ann, "Gear", "cc-by-sa").await;
+    let mine = licensed_model(&s, &bob, "Bigger gear", "cc-by").await;
+    let r = add_parent(&s, &bob, mine, &gear.to_string()).await;
+    assert!(
+        r.body.contains("Gear is licensed") && r.body.contains("ShareAlike"),
+        "{}",
+        r.body
+    );
+    assert_eq!(s.scalar("SELECT count(*) FROM mf_remixes").await, 0);
+    // one its licence keeps is still taken
+    let same = licensed_model(&s, &bob, "Same gear", "cc-by-sa").await;
+    let r = add_parent(&s, &bob, same, &gear.to_string()).await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER, "{}", r.body);
+    assert_eq!(s.scalar("SELECT count(*) FROM mf_remixes").await, 1);
+}
+
+#[tokio::test]
 async fn two_parents_with_no_common_licence_are_refused_naming_the_parent() {
     let Some(s) = site_3d(Vec::new(), true).await else {
         return;
