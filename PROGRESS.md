@@ -1,5 +1,7 @@
 # Progress
 
+- 2026-11-13 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests; cargo audit shows only the known #126 (plus a dev-only rustix "unsound" warning); no new findings filed.
+- Fixed #139: an import's bulk publish checks each draft's licence against its parents (as a model's own publish does); a remix the parent's licence forbids stays a draft and is named with the reason.
 - 2026-11-12 nightly sweep: CI green with DB tests, cargo audit shows only the known #126; no needs-triage issues; filed one import-publish licence finding, one sent to Bruce privately.
 - Fixed #136: a contest's title is escaped in the page `<title>` (test with `&` and `<b>` in the title).
 - 2026-11-09 #102: customer-facing branding. The footer on every page and the README now say MakerFoundry is part of the StitchFoundry family (no SiteSentrix, no Stitchwright), with a test on the footer; comments, AGENTS.md and docs/api.md follow. Left unchanged on purpose (need Bruce's approval or are technical): LICENSE-MIT, the legal pages' business name, the DMCA agent entry, ASSETS.md, org URLs and Pages origins.
