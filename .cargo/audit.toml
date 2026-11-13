@@ -3,4 +3,10 @@
 # RUSTSEC-2023-0071 (rsa, Marvin timing attack; no fixed release): rsa is only in Cargo.lock through
 # sqlx-mysql, which sqlx lists but MakerFoundry never builds (Postgres only: `cargo tree -i
 # sqlx-mysql` prints nothing). Check again if MySQL support is ever turned on.
-ignore = ["RUSTSEC-2023-0071"]
+#
+# RUSTSEC-2026-0459 (libsqlite3-sys 0.30.1, C SQLite CVE-2026-119375, fix >=0.39.0; issue #126): same
+# situation. libsqlite3-sys is only in Cargo.lock through sqlx-sqlite, an optional sqlx dependency that is
+# never built (sqlx has default-features = false with postgres only: `cargo tree -i libsqlite3-sys` prints
+# nothing). Bruce approved this ignore on 2026-11-12 for 60 days: REMOVE IT by 2027-01-11 (or as soon as an
+# sqlx release stops pinning libsqlite3-sys ^0.30), and re-check if the sqlite feature is ever turned on.
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0459"]
