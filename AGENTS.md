@@ -2,7 +2,7 @@
 
 (`CLAUDE.md` is a one-line import of this file.)
 
-MakerFoundry is a marketplace by **SiteSentrix** where makers share and sell **machine-embroidery
+MakerFoundry is a marketplace in the **StitchFoundry** family where makers share and sell **machine-embroidery
 designs** (DST, PES, JEF, EXP, VP3, XXX…) and **laser-cut files** (SVG, DXF, PDF…). Free designs
 are shared openly; paid designs are sold with MakerFoundry as the broker, taking a small fee on
 each sale. Sibling products: [StitchFoundry](https://github.com/Stitchwright/StitchFoundry)

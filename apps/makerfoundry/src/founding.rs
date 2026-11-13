@@ -80,6 +80,39 @@ pub async fn waiting_link(state: &AppState, account: i64) -> String {
     }
 }
 
+/// The cookie `/signup?next=/founding` leaves (30 days; it holds nothing but "1").
+pub const INTENT_COOKIE_SET: &str = "mf_founding_intent=1; Path=/; Secure; SameSite=Lax; Max-Age=2592000";
+const INTENT_COOKIE: &str = "mf_founding_intent";
+
+/// Whether the request carries the "signed up from the founding page" cookie.
+fn came_from_founding(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(axum::http::header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .filter_map(|pair| pair.trim().split_once('='))
+        .any(|(name, value)| name == INTENT_COOKIE && value == "1")
+}
+
+/// For the account page: "One more step: send your founding application", when this account
+/// signed up from the founding page and has not applied yet (empty otherwise).
+pub async fn reminder(state: &AppState, headers: &HeaderMap, account: i64) -> String {
+    let Some(pool) = state.db.as_ref().filter(|_| came_from_founding(headers)) else {
+        return String::new();
+    };
+    let applied: Option<i32> = sqlx::query_scalar("SELECT 1 FROM mf_founding WHERE account_id = $1")
+        .bind(account)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    if applied.is_some() {
+        return String::new();
+    }
+    r#"<p class="lead"><strong>One more step:</strong> <a href="/founding">send your founding creator application</a>. Your account is made, but we only see your application once you send it.</p>"#.to_string()
+}
+
 /// The email telling the admins of an application: only the name, link and what they make,
 /// never the applicant's email address.
 fn admin_mail(public_url: &str, name: &str, link: &str, about: &str) -> (String, String) {
@@ -417,8 +450,47 @@ async fn admin_html(pool: &PgPool, note: &str) -> String {
     } else {
         format!(r#"<ul class="reports">{items}</ul>"#)
     };
+    let unapplied = unapplied_html(pool).await;
     format!(
-        r#"<section class="design"><h1>Founding creators</h1>{note}<p class="muted">{left} of {SPOTS} spots left. Approving gives the lowest free number. The public page is <a href="/founding">/founding</a>. <a href="/admin">Reports</a></p>{list}</section>"#
+        r#"<section class="design"><h1>Founding creators</h1>{note}<p class="muted">{left} of {SPOTS} spots left. Approving gives the lowest free number. The public page is <a href="/founding">/founding</a>. <a href="/admin">Reports</a></p>{list}{unapplied}</section>"#
+    )
+}
+
+/// "Signed up but not applied": accounts made in the last 30 days with no application (newest
+/// first, at most 50). Shows the maker-page handle if there is one, else the account number;
+/// never an email address.
+async fn unapplied_html(pool: &PgPool) -> String {
+    let rows: Vec<(i64, String, Option<String>)> = sqlx::query_as(
+        "SELECT a.account_id, to_char(a.created_at, 'YYYY-MM-DD'), m.handle
+         FROM mf_accounts a
+         LEFT JOIN mf_makers m ON m.account_id = a.account_id
+         WHERE a.created_at > now() - interval '30 days'
+           AND NOT EXISTS (SELECT 1 FROM mf_founding f WHERE f.account_id = a.account_id)
+         ORDER BY a.created_at DESC LIMIT 50",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let items: String = rows
+        .iter()
+        .map(|(account, at, handle)| {
+            let who = match handle {
+                Some(h) => format!(r#"<a href="/makers/{h}">{h}</a>"#, h = escape(h)),
+                None => "no maker profile yet".to_string(),
+            };
+            format!(
+                r#"<li>Account {account} · {who} · signed up {at}</li>"#,
+                at = escape(at)
+            )
+        })
+        .collect();
+    let list = if rows.is_empty() {
+        r#"<p class="muted">Nobody new.</p>"#.to_string()
+    } else {
+        format!("<ul>{items}</ul>")
+    };
+    format!(
+        r#"<h2>Signed up but not applied</h2><p class="muted">Accounts made in the last 30 days that haven't sent the founding form. Nothing is approved automatically.</p>{list}"#
     )
 }
 

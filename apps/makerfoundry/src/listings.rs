@@ -122,6 +122,8 @@ pub struct Filter {
     pub popular: bool,
     /// The most saved first.
     pub most_saved: bool,
+    /// The most saved in the last 7 days first (Trending).
+    pub trending: bool,
     /// Designs in this collection (`collections`).
     pub collection: Option<i64>,
     /// Designs by the makers this account follows (`follows`).
@@ -172,7 +174,10 @@ pub async fn find(pool: &PgPool, f: &Filter, limit: i64) -> Vec<Card> {
                 (SELECT w.number FROM mf_founding w WHERE w.account_id = d.account_id AND w.status = 'approved') AS founding
          FROM mf_designs d JOIN mf_makers m ON m.account_id = d.account_id
          {WHERE}
-         ORDER BY CASE WHEN $13 THEN (SELECT count(DISTINCT c.account_id) FROM mf_collection_items i
+         ORDER BY CASE WHEN $17 THEN (SELECT count(DISTINCT c.account_id) FROM mf_collection_items i
+                                      JOIN mf_collections c ON c.id = i.collection_id
+                                      WHERE i.design_id = d.id AND i.added_at > now() - interval '7 days') END DESC NULLS LAST,
+                  CASE WHEN $13 THEN (SELECT count(DISTINCT c.account_id) FROM mf_collection_items i
                                       JOIN mf_collections c ON c.id = i.collection_id WHERE i.design_id = d.id) END DESC NULLS LAST,
                   CASE WHEN $5 THEN d.downloads END DESC NULLS LAST,
                   CASE WHEN $3::text IS NOT NULL AND NOT $5 THEN ts_rank(d.search, websearch_to_tsquery('english', $3)) END DESC NULLS LAST,
@@ -197,6 +202,7 @@ pub async fn find(pool: &PgPool, f: &Filter, limit: i64) -> Vec<Card> {
         .bind(f.followed_by)
         .bind(f.three_d)
         .bind(f.founding_only)
+        .bind(f.trending)
         .fetch_all(pool)
         .await;
     match rows {
@@ -405,15 +411,15 @@ async fn shelf(state: &AppState, title: &str, more: (&str, &str), filter: Filter
     )
 }
 
-/// The home page's shelves of design cards: trending (most saved), newest, free, and founding
+/// The home page's shelves of design cards: trending (most saved in the last 7 days), newest, free, and founding
 /// creators' designs. Empty while there are none.
 pub async fn shelves(state: &AppState) -> String {
     let trending = shelf(
         state,
         "Trending",
-        ("/browse?sort=saved", "See more trending designs"),
+        ("/browse?sort=trending", "See more trending designs"),
         Filter {
-            most_saved: true,
+            trending: true,
             ..Filter::default()
         },
     )
@@ -465,9 +471,10 @@ pub async fn browse(State(state): State<AppState>, headers: HeaderMap, Query(q):
         _ => None,
     };
     let tag = tidy_tags(&q.tag).into_iter().next();
-    // Trending is the most saved until the 7-day window lands (#115, later slice)
+    // Trending counts saves of the last 7 days; Most saved counts all of them
     let popular = q.sort == "popular";
-    let most_saved = q.sort == "saved" || q.sort == "trending";
+    let most_saved = q.sort == "saved";
+    let trending = q.sort == "trending";
     let sort_name = if popular {
         "popular"
     } else if q.sort == "saved" {
@@ -526,6 +533,7 @@ pub async fn browse(State(state): State<AppState>, headers: HeaderMap, Query(q):
         material: material.clone(),
         popular,
         most_saved,
+        trending,
         collection: None,
         followed_by: None,
         founding_only: false,
