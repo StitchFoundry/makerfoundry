@@ -21,7 +21,7 @@
 //! answers Stripe, and `/admin/orders` shows the dispute until it's settled.
 //!
 //! Orders from shops (MF-83) are disputed the same way at Stripe, but their money moves differently
-//! (`shop_orders::after`): a dispute on one is logged and the admins alerted, to settle by hand.
+//! (`shop_orders::after`); `shop_orders::disputes` settles those (issue #99).
 
 use serde_json::Value;
 use sqlx::{PgConnection, PgPool, Row};
@@ -88,6 +88,8 @@ pub async fn record_created(conn: &mut PgConnection, dispute: &Value) -> Result<
             .fetch_optional(&mut *conn)
             .await?;
     let Some((order, status, known)) = order else {
+        // (or an order from a shop: #99)
+        crate::shop_orders::disputes::record_created(conn, dispute).await?;
         return Ok(());
     };
     match known {
@@ -122,6 +124,10 @@ pub async fn record_closed(conn: &mut PgConnection, dispute: &Value) -> Result<(
         return Ok(());
     };
     record_created(conn, dispute).await?;
+    // (an order from a shop is closed in its own table: #99)
+    if crate::shop_orders::disputes::record_closed(conn, dispute).await? {
+        return Ok(());
+    }
     let outcome: String = dispute
         .get("status")
         .and_then(Value::as_str)
@@ -159,7 +165,7 @@ pub fn disputed_intent(event: &Value) -> Option<String> {
 
 /// After a dispute event is recorded: the order's Stripe steps, or (an order from a shop) the
 /// admins alerted.
-pub async fn after_event(state: &AppState, pool: &PgPool, intent: &str, new: bool) {
+pub async fn after_event(state: &AppState, pool: &PgPool, intent: &str, _new: bool) {
     let order: Option<i64> =
         sqlx::query_scalar("SELECT id FROM mf_orders WHERE stripe_payment_intent = $1 AND dispute_id IS NOT NULL")
             .bind(intent)
@@ -174,19 +180,8 @@ pub async fn after_event(state: &AppState, pool: &PgPool, intent: &str, new: boo
         }
         return;
     }
-    let shop: Option<String> = sqlx::query_scalar("SELECT ref FROM mf_shop_orders WHERE stripe_payment_intent = $1")
-        .bind(intent)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten();
-    if let (Some(reference), true) = (shop, new) {
-        let why = format!(
-            "A buyer disputed the payment for shop order {reference} with their bank. MakerFoundry doesn't settle disputes on orders from shops by itself: look at it in the Stripe Dashboard and settle it with the shop by hand."
-        );
-        eprintln!("ALERT selling: dispute on shop order {reference}: settle it by hand");
-        alert_admins(state, pool, &format!("Dispute on shop order {reference}"), &why).await;
-    }
+    // (an order from a shop: #99)
+    crate::shop_orders::disputes::after_event(state, pool, intent).await;
 }
 
 /// The sweep: disputes whose Stripe steps or email aren't done yet, up to 50 at a time.
@@ -208,7 +203,7 @@ pub async fn settle_all(state: &AppState, pool: &PgPool) -> Result<(), sqlx::Err
             eprintln!("selling: dispute of order {order}: {e}");
         }
     }
-    Ok(())
+    crate::shop_orders::disputes::settle_all(state, pool).await
 }
 
 /// A disputed order taken as far as it goes now: its Stripe steps (each once), then the seller's
