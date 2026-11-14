@@ -10388,6 +10388,91 @@ async fn a_contest_opens_only_with_rules_and_takes_creators_own_published_models
     );
 }
 
+/// Issue #137: entries sent at the same moment can't take a member past three.
+#[tokio::test]
+async fn entries_sent_at_once_stay_within_the_cap() {
+    let Some(s) = site_3d(vec![1000], true).await else {
+        return;
+    };
+    let admin = model_maker(&s, "admin%40example.com", "admin").await;
+    let (slug, _) = contest(&s, &admin, "All+at+once", "admins", true).await;
+    let ann = model_maker(&s, "ann%40example.com", "ann").await;
+    let mut models = Vec::new();
+    for t in ["A", "B", "C", "D", "E", "F"] {
+        models.push(licensed_model(&s, &ann, t, "cc-by").await);
+    }
+    let path = format!("/contests/{slug}/enter");
+    let forms: Vec<String> = models.iter().map(|m| format!("design={m}&agree=yes")).collect();
+    let sends = forms.iter().map(|f| s.post(&path, f, Some(&ann)));
+    let answers = join_all(sends).await;
+    assert_eq!(s.scalar("SELECT count(*) FROM mf_contest_entries").await, 3);
+    let turned_away = answers.iter().filter(|r| r.body.contains("up to 3 models")).count();
+    assert_eq!(turned_away, 3, "the other three are told why");
+}
+
+/// Issue #137: makes posted at the same moment can't take a member past ten on a design.
+#[tokio::test]
+async fn makes_posted_at_once_stay_within_the_cap() {
+    let Some(s) = services_site(None, None, None, None, true, None).await else {
+        return;
+    };
+    let ann = model_maker(&s, "ann%40example.com", "ann").await;
+    let bea = model_maker(&s, "bea%40example.com", "bea").await;
+    let bea_id: i64 = sqlx::query_scalar("SELECT account_id FROM mf_makers WHERE handle = 'bea'")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    let gear = licensed_model(&s, &ann, "Gear", "cc-by").await;
+    // eight already (rows stand in for photos), then four at once: only two more fit
+    for _ in 0..8 {
+        sqlx::query("INSERT INTO mf_makes (design_id, account_id, photo_key, thumb_key, width, height) VALUES ($1, $2, 'k', 'k', 1, 1)")
+            .bind(gear)
+            .bind(bea_id)
+            .execute(&s.pool)
+            .await
+            .unwrap();
+    }
+    let path = format!("/d/{gear}/makes");
+    let sends = (0..4).map(|_| {
+        s.send(multipart(
+            &path,
+            &[
+                ("photo", "print.jpg", photo_with_location()),
+                ("confirm", "", b"yes".to_vec()),
+            ],
+            &bea,
+        ))
+    });
+    let answers = join_all(sends).await;
+    assert_eq!(s.scalar("SELECT count(*) FROM mf_makes").await, 10);
+    let turned_away = answers.iter().filter(|r| r.body.contains("up to 10 makes")).count();
+    assert_eq!(turned_away, 2, "the other two are told why");
+}
+
+/// Runs `futures` concurrently (interleaved on this task) → their answers in order.
+async fn join_all<F: std::future::Future>(futures: impl IntoIterator<Item = F>) -> Vec<F::Output> {
+    let mut pending: Vec<_> = futures.into_iter().map(Box::pin).collect();
+    let mut done: Vec<Option<F::Output>> = pending.iter().map(|_| None).collect();
+    std::future::poll_fn(|cx| {
+        let mut all = true;
+        for (f, out) in pending.iter_mut().zip(done.iter_mut()) {
+            if out.is_none() {
+                match f.as_mut().poll(cx) {
+                    std::task::Poll::Ready(v) => *out = Some(v),
+                    std::task::Poll::Pending => all = false,
+                }
+            }
+        }
+        if all {
+            std::task::Poll::Ready(())
+        } else {
+            std::task::Poll::Pending
+        }
+    })
+    .await;
+    done.into_iter().flatten().collect()
+}
+
 #[tokio::test]
 async fn members_vote_once_never_for_themselves_and_admins_announce_the_winners() {
     let Some(s) = site_3d(vec![1000], true).await else {

@@ -360,25 +360,59 @@ pub async fn enter(
         )
         .await;
     }
-    let done = sqlx::query(
-        "INSERT INTO mf_contest_entries (contest_id, design_id, account_id)
-         SELECT $1, d.id, d.account_id FROM mf_designs d
-         WHERE d.id = $2 AND d.account_id = $3 AND d.kind = 'model3d' AND d.status = 'published'
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(c.id)
-    .bind(design)
-    .bind(user.account_id)
-    .execute(&pool)
-    .await;
-    match done {
-        Ok(r) if r.rows_affected() == 1 => Redirect::to(&format!("/contests/{}", c.slug)).into_response(),
+    match add_entry(&pool, c.id, design, user.account_id).await {
+        Ok(Some(1)) => Redirect::to(&format!("/contests/{}", c.slug)).into_response(),
+        Ok(None) => {
+            contest_page(
+                &state,
+                &pool,
+                Some(&user),
+                &c,
+                &format!("You can enter up to {MAX_ENTRIES} models in a contest."),
+            )
+            .await
+        }
         Ok(_) => contest_page(&state, &pool, Some(&user), &c, "Choose one of your published models.").await,
         Err(e) => {
             eprintln!("contests: enter: {e}");
             contest_page(&state, &pool, Some(&user), &c, "The entry couldn't be saved just now.").await
         }
     }
+}
+
+/// Enters `design` in contest `contest` for `account`, holding a lock on (contest, account) so
+/// requests sent at the same moment can't take them past `MAX_ENTRIES` (issue #137) → the rows
+/// added (0 when it isn't their published model or is already in), or `None` when at the cap.
+async fn add_entry(pool: &PgPool, contest: i64, design: i64, account: i64) -> Result<Option<u64>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("mf-contest-entry-{contest}-{account}"))
+        .execute(&mut *tx)
+        .await?;
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM mf_contest_entries WHERE contest_id = $1 AND account_id = $2")
+            .bind(contest)
+            .bind(account)
+            .fetch_one(&mut *tx)
+            .await?;
+    if count >= MAX_ENTRIES {
+        tx.rollback().await?;
+        return Ok(None);
+    }
+    let added = sqlx::query(
+        "INSERT INTO mf_contest_entries (contest_id, design_id, account_id)
+         SELECT $1, d.id, d.account_id FROM mf_designs d
+         WHERE d.id = $2 AND d.account_id = $3 AND d.kind = 'model3d' AND d.status = 'published'
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(contest)
+    .bind(design)
+    .bind(account)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    tx.commit().await?;
+    Ok(Some(added))
 }
 
 /// `POST /contests/<slug>/withdraw/<design>`: an entry taken back, with its votes.
