@@ -6,6 +6,7 @@
 pub mod after;
 pub mod brand;
 pub mod contract;
+pub mod disputes;
 pub mod hub;
 pub mod mail;
 pub mod orders;

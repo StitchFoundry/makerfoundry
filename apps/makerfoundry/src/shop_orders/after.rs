@@ -27,7 +27,7 @@ use crate::accounts::{current_user, forbidden, same_origin};
 use crate::pages::escape;
 
 /// Where an order is while a shop still has it.
-const OPEN: &[&str] = &[
+pub(super) const OPEN: &[&str] = &[
     "sent",
     "received",
     "proof_sent",
@@ -365,7 +365,7 @@ async fn ledger(
     .map(|_| ())
 }
 
-fn stripe_id(id: &str, prefix: &str) -> bool {
+pub(super) fn stripe_id(id: &str, prefix: &str) -> bool {
     id.starts_with(prefix) && id.len() <= 255 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 

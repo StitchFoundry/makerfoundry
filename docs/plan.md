@@ -488,8 +488,15 @@ StitchShop's side is stitchbench#74).
   `charge.dispute.closed` won (or an inquiry closed) pays the order again and transfers back what
   was taken, lost makes it a `chargeback`. Each Stripe step is checked with Stripe and idempotent,
   under a per-order lock, retried by the 10-minute sweep; a refused step never fails the webhook,
-  it alerts the admins once. The seller is emailed at each step. Shop orders' disputes are
-  alerted only. Seller-terms wording and evidence are out of scope (attorney item #8).
+  it alerts the admins once. The seller is emailed at each step. Shop orders' disputes: see the next item. Seller-terms wording and evidence are out of scope (attorney item #8).
+- **Shop-order chargebacks, built 2026-11-14** (issue #99; `src/shop_orders/disputes.rs`,
+  `migrations/0050_shop_order_disputes.sql`; payments code, needs Bruce's review): the same flow
+  for orders from shops: `disputed` pauses the order (its previous status is kept), the shop's
+  share is taken back from its transfer and MakerFoundry's 10% returned (tax stays MakerFoundry's);
+  won restores the status and transfers back the rest, lost is a `chargeback`. Same locks,
+  Stripe-first checks, idempotency keys and sweep as designs; the shop is emailed; a refused step
+  alerts the admins once. Not done: telling the shop's program through StitchHub (the contract has
+  no message for it) and the owed-balance ledger (§ 9, doesn't exist yet). Paid shop orders stay off.
 - **No program passes as a design, built 2026-11-04** (issue #86, found by the stitch-e2e
   staging deep probes; `src/designs.rs`, `src/embroidery.rs`): a design file's name must end in a
   design format's ending (DST, PES, PEC, JEF, EXP, VP3, XXX, U01, PCS, TAP, DSB, DSZ, SVG, DXF,

@@ -2724,6 +2724,10 @@ impl Site {
             .contains("/files/")
     }
 
+    async fn pool_exec(&self, sql: &str) {
+        sqlx::query(sql).execute(&self.pool).await.unwrap();
+    }
+
     async fn order_status(&self, order: &str) -> String {
         sqlx::query_scalar("SELECT status FROM mf_orders WHERE id = $1")
             .bind(order.parse::<i64>().unwrap())
@@ -11652,6 +11656,120 @@ async fn a_shop_order_refunded_in_the_stripe_dashboard_takes_back_the_transfer_a
     );
     // as for a refund made in MakerFoundry: the shop is out only the card fee
     assert_eq!(s.scalar("SELECT sum(cents)::bigint FROM mf_shop_ledger").await, 0);
+    assert_eq!(
+        s.scalar("SELECT sum(cents)::bigint FROM mf_shop_ledger WHERE kind = 'shop'")
+            .await,
+        -736
+    );
+}
+
+/// Issue #99: a dispute on a shop order pauses it, takes the shop's share back once and gives the
+/// 10% back; won, the order goes back to its status and the shop gets the rest back.
+#[tokio::test]
+async fn a_disputed_shop_order_is_paused_reversed_once_and_restored_when_won() {
+    let Some((s, state, _hub, st)) = open_shop().await else {
+        return;
+    };
+    let (_bea, _path, reference) = paid_order(&s, &st).await;
+    s.pool_exec("UPDATE mf_shop_orders SET status = 'in_production'").await;
+    let created = dispute_json("dp_shop_1", "pi_cs_test_1", 24_349, "needs_response");
+    for evt in ["evt_sdp_1", "evt_sdp_1b"] {
+        let r = s
+            .stripe_event(WEBHOOK_SECRET, evt, "charge.dispute.created", created.clone())
+            .await;
+        assert_eq!(r.status, StatusCode::OK);
+    }
+    makerfoundry::disputes::settle_all(&state, &s.pool).await.unwrap();
+    let status: String = sqlx::query_scalar("SELECT status FROM mf_shop_orders")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "disputed");
+    {
+        let f = st.lock().unwrap();
+        assert_eq!(f.reversals.len(), 1, "taken back once");
+        assert_eq!(f.reversals[0].0, "tr_pi_cs_test_1");
+        assert_eq!(f.reversals[0].1["amount"], "21178");
+        assert_eq!(f.reversals[0].1["metadata[reason]"], "shop_dispute");
+        assert_eq!(f.fee_refunds.len(), 1);
+        assert_eq!(f.fee_refunds[0].1["amount"], "2435");
+        assert_eq!(f.fee_refunds[0].1["metadata[reason]"], "shop_dispute_fee");
+        assert!(f.refunds.is_empty() && f.transfers.is_empty());
+    }
+    // the shop is out the card fee only, as on a refund
+    assert_eq!(
+        s.scalar("SELECT sum(cents)::bigint FROM mf_shop_ledger WHERE kind = 'shop'")
+            .await,
+        -736
+    );
+    assert_eq!(s.scalar("SELECT sum(cents)::bigint FROM mf_shop_ledger").await, 0);
+    // won (the closed event twice): back to where it was, the shop given back the rest, once
+    let won = dispute_json("dp_shop_1", "pi_cs_test_1", 24_349, "won");
+    for evt in ["evt_sdp_2", "evt_sdp_2"] {
+        s.stripe_event(WEBHOOK_SECRET, evt, "charge.dispute.closed", won.clone())
+            .await;
+    }
+    makerfoundry::disputes::settle_all(&state, &s.pool).await.unwrap();
+    let status: String = sqlx::query_scalar("SELECT status FROM mf_shop_orders")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "in_production");
+    {
+        let f = st.lock().unwrap();
+        assert_eq!(f.transfers.len(), 1, "transferred back once");
+        assert_eq!(f.transfers[0]["amount"], "18743");
+        assert_eq!(f.transfers[0]["destination"], "acct_shop4217");
+        assert_eq!(f.transfers[0]["metadata[reason]"], "shop_dispute_won");
+        assert_eq!(f.transfers[0]["metadata[shop_order]"], reference);
+        assert_eq!(f.reversals.len(), 1);
+    }
+    // where the sale was: the shop's $211.78, MakerFoundry's 10%
+    assert_eq!(
+        s.scalar("SELECT sum(cents)::bigint FROM mf_shop_ledger WHERE kind = 'shop'")
+            .await,
+        21_178
+    );
+    assert_eq!(
+        s.scalar("SELECT sum(cents)::bigint FROM mf_shop_ledger WHERE kind = 'fee'")
+            .await,
+        2_435
+    );
+}
+
+/// Issue #99: a lost dispute is a chargeback and stays reversed; a `closed` that comes before its
+/// `created` is recorded as both; a refused reversal alerts once and the sweep tries again.
+#[tokio::test]
+async fn a_lost_shop_dispute_is_a_chargeback_and_a_refused_step_is_retried() {
+    let Some((s, state, _hub, st)) = open_shop().await else {
+        return;
+    };
+    paid_order(&s, &st).await;
+    st.lock().unwrap().fee_refunds_fail = true;
+    let lost = dispute_json("dp_shop_9", "pi_cs_test_1", 24_349, "lost");
+    s.stripe_event(WEBHOOK_SECRET, "evt_sdp_9", "charge.dispute.closed", lost)
+        .await;
+    let status: String = sqlx::query_scalar("SELECT status FROM mf_shop_orders")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "chargeback");
+    assert_eq!(st.lock().unwrap().reversals.len(), 1);
+    assert!(st.lock().unwrap().fee_refunds.is_empty());
+    assert_eq!(
+        s.scalar("SELECT count(*) FROM mf_shop_orders WHERE dispute_alerted_at IS NOT NULL")
+            .await,
+        1
+    );
+    st.lock().unwrap().fee_refunds_fail = false;
+    makerfoundry::disputes::settle_all(&state, &s.pool).await.unwrap();
+    makerfoundry::disputes::settle_all(&state, &s.pool).await.unwrap();
+    {
+        let f = st.lock().unwrap();
+        assert_eq!(f.reversals.len(), 1, "not reversed again");
+        assert_eq!(f.fee_refunds.len(), 1);
+        assert!(f.transfers.is_empty(), "a lost dispute gives nothing back");
+    }
     assert_eq!(
         s.scalar("SELECT sum(cents)::bigint FROM mf_shop_ledger WHERE kind = 'shop'")
             .await,
