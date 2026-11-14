@@ -232,25 +232,25 @@ pub async fn post(
             let _ = storage.delete(&photo_key).await;
             return Err(e);
         }
-        let saved: Result<i64, sqlx::Error> = sqlx::query_scalar(
-            "INSERT INTO mf_makes (design_id, account_id, photo_key, thumb_key, width, height, note) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
-        )
-        .bind(id)
-        .bind(user.account_id)
-        .bind(&photo_key)
-        .bind(&thumb_key)
-        .bind(i32::try_from(clean.width).unwrap_or(i32::MAX))
-        .bind(i32::try_from(clean.height).unwrap_or(i32::MAX))
-        .bind(&note)
-        .fetch_one(pool)
-        .await;
-        let make = match saved {
-            Ok(m) => m,
-            Err(e) => {
+        let row = NewMake {
+            design: id,
+            account: user.account_id,
+            photo_key: &photo_key,
+            thumb_key: &thumb_key,
+            width: i32::try_from(clean.width).unwrap_or(i32::MAX),
+            height: i32::try_from(clean.height).unwrap_or(i32::MAX),
+            note: &note,
+        };
+        let make = match save(pool, &row).await {
+            Ok(Some(m)) => m,
+            other => {
                 // (best effort: an orphaned photo costs a little storage)
                 let _ = storage.delete(&photo_key).await;
                 let _ = storage.delete(&thumb_key).await;
-                return Err(e.to_string());
+                return Err(match other {
+                    Err(e) => e.to_string(),
+                    _ => AT_CAP.to_string(),
+                });
             }
         };
         let is_model: bool = sqlx::query_scalar("SELECT kind = 'model3d' FROM mf_designs WHERE id = $1")
@@ -270,6 +270,7 @@ pub async fn post(
             }
             Redirect::to(&format!("/d/{id}/{}", slug(&title))).into_response()
         }
+        Err(e) if e == AT_CAP => problem(id, &format!("You can post up to {MAX_PER_DESIGN} makes on a design.")),
         Err(e) => {
             eprintln!("makes: {id}: {e}");
             problem(
@@ -278,6 +279,53 @@ pub async fn post(
             )
         }
     }
+}
+
+/// `save`'s answer (inside `post`) when the member already has `MAX_PER_DESIGN` makes on it.
+const AT_CAP: &str = "at the cap";
+
+/// A make about to be kept (`save`).
+struct NewMake<'a> {
+    design: i64,
+    account: i64,
+    photo_key: &'a str,
+    thumb_key: &'a str,
+    width: i32,
+    height: i32,
+    note: &'a str,
+}
+
+/// Keeps a make, holding a lock on (design, account) so posts sent at the same moment can't take
+/// the member past `MAX_PER_DESIGN` (issue #137) → its id, or `None` when at the cap.
+async fn save(pool: &PgPool, m: &NewMake<'_>) -> Result<Option<i64>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("mf-make-{}-{}", m.design, m.account))
+        .execute(&mut *tx)
+        .await?;
+    let posted: i64 = sqlx::query_scalar("SELECT count(*) FROM mf_makes WHERE design_id = $1 AND account_id = $2")
+        .bind(m.design)
+        .bind(m.account)
+        .fetch_one(&mut *tx)
+        .await?;
+    if posted >= MAX_PER_DESIGN {
+        tx.rollback().await?;
+        return Ok(None);
+    }
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO mf_makes (design_id, account_id, photo_key, thumb_key, width, height, note) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+    )
+    .bind(m.design)
+    .bind(m.account)
+    .bind(m.photo_key)
+    .bind(m.thumb_key)
+    .bind(m.width)
+    .bind(m.height)
+    .bind(m.note)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Some(id))
 }
 
 /// A make's photo or thumbnail, while its design is published.
