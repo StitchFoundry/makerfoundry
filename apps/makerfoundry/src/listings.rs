@@ -758,6 +758,25 @@ pub async fn public_page_slug(
     show(state, headers, id).await
 }
 
+/// A row of in-page links (Description, Files, Makes, Comments; Remixes for a 3D model) above
+/// the design page's sections. Plain anchors, so it works without JavaScript. Makes and Comments
+/// exist only on a published page.
+fn section_tabs(published: bool, model: bool) -> String {
+    let mut links = vec![("tab-description", "Description"), ("tab-files", "Files")];
+    if published {
+        links.push(("tab-makes", "Makes"));
+        links.push(("tab-comments", "Comments"));
+    }
+    if model {
+        links.push(("tab-files", "Remixes"));
+    }
+    let items: String = links
+        .iter()
+        .map(|(id, name)| format!(r##"<li><a href="#{id}">{name}</a></li>"##))
+        .collect();
+    format!(r#"<nav aria-label="On this page"><ul class="kind-tabs">{items}</ul></nav>"#)
+}
+
 async fn show(state: AppState, headers: HeaderMap, id: i64) -> Response {
     let viewer = current_user(&state, &headers).await;
     let signed_in = viewer.is_some();
@@ -958,8 +977,10 @@ async fn show(state: AppState, headers: HeaderMap, id: i64) -> Response {
     } else {
         (String::new(), String::new())
     };
+    let published = d.status == "published";
     let footer = format!(
-        r#"{desc}{formats}{photos}{makes}{tags}{licence_html}{comments}{edit}"#,
+        r#"{tabs}<div id="tab-description">{desc}</div><div id="tab-files">{formats}</div>{photos}<div id="tab-makes">{makes}</div>{tags}{licence_html}<div id="tab-comments">{comments}</div>{edit}"#,
+        tabs = section_tabs(published, d.kind == "model3d"),
         desc = paragraphs(&d.description)
     );
     let title = if d.title.is_empty() {
@@ -1832,5 +1853,15 @@ mod tests {
     #[test]
     fn query_words_are_encoded() {
         assert_eq!(url_word("cat & dog"), "cat%20%26%20dog");
+    }
+
+    #[test]
+    fn section_tabs_follow_the_page() {
+        let draft = section_tabs(false, false);
+        assert!(draft.contains("#tab-files") && !draft.contains("#tab-makes"));
+        let live = section_tabs(true, false);
+        assert!(live.contains("#tab-makes") && live.contains("#tab-comments"));
+        assert!(!live.contains("Remixes"));
+        assert!(section_tabs(true, true).contains("Remixes"));
     }
 }
