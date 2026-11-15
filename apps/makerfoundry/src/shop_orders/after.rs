@@ -194,17 +194,24 @@ pub async fn shop_cancelled(state: &AppState, pool: &PgPool, env: &Envelope, c: 
         return ignored(env, "not the shop's to cancel now");
     }
     let refund = BEFORE_PRODUCTION.contains(&now.as_str());
-    sqlx::query(
+    // (only from the status just read: a dispute or a customer's cancel that came in between
+    // stands, issue #147)
+    let done = sqlx::query(
         "UPDATE mf_shop_orders SET status = 'cancelled', cancelled_by = 'shop', cancel_why = $2, refund_due = $3,
              updated_at = now()
-         WHERE id = $1",
+         WHERE id = $1 AND status = $4",
     )
     .bind(id)
     .bind(&c.why)
     .bind(refund)
+    .bind(&now)
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
+    if done.rows_affected() == 0 {
+        // (the message comes again and is read against the new status)
+        return Err("the order changed meanwhile".into());
+    }
     if refund {
         settle_now(state, pool, id).await;
     }
@@ -812,11 +819,19 @@ pub async fn answer(
             return Ok(());
         }
         if approved {
-            sqlx::query("UPDATE mf_shop_orders SET status = 'approved', updated_at = now() WHERE id = $1")
-                .bind(o.id)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| e.to_string())?;
+            // (only from `proof_sent`: a dispute committed meanwhile stands, issue #147; the
+            // answer is then not kept either)
+            let moved = sqlx::query(
+                "UPDATE mf_shop_orders SET status = 'approved', updated_at = now() WHERE id = $1 AND status = 'proof_sent'",
+            )
+            .bind(o.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?
+            .rows_affected();
+            if moved == 0 {
+                return Ok(());
+            }
         }
         let message = Message::ProofAnswer(ProofAnswer {
             proof,

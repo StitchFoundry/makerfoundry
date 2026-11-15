@@ -11862,6 +11862,66 @@ async fn a_lost_shop_dispute_is_a_chargeback_and_a_refused_step_is_retried() {
     );
 }
 
+/// Issue #147: a shop's cancel that read the order before a dispute paused it doesn't overwrite
+/// `disputed` (nor ask for a refund): the order's row is held by a transaction that disputes it
+/// while the cancel is applied, so the cancel's write waits for it and then finds a new status.
+#[tokio::test]
+async fn a_shop_cancel_racing_a_dispute_leaves_the_order_disputed() {
+    let Some((s, state, hub, _st)) = open_shop().await else {
+        return;
+    };
+    let (_bea, _path, r) = paid_order(&s, &_st).await;
+    s.pool_exec("UPDATE mf_shop_orders SET status = 'received'").await;
+    makerfoundry::shop_orders::hub::stand_in::deliver(
+        &hub,
+        from_shop(
+            "order.cancel",
+            1,
+            &r,
+            1,
+            json!({"by": "shop", "why": "Out of navy tees."}),
+        ),
+    );
+    // the dispute holds the row (not yet committed) while the shop's cancel is applied
+    let mut dispute = s.pool.begin().await.unwrap();
+    sqlx::query("UPDATE mf_shop_orders SET status = 'disputed', dispute_prev_status = status")
+        .execute(&mut *dispute)
+        .await
+        .unwrap();
+    let sync = tokio::spawn({
+        let state = state.clone();
+        async move { makerfoundry::shop_orders::sync(&state).await }
+    });
+    // until the cancel's write is waiting for the row
+    let mut waited = 0;
+    while s
+        .scalar(
+            "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'
+             AND query LIKE '%cancelled_by = ''shop''%'",
+        )
+        .await
+        == 0
+    {
+        assert!(waited < 200, "the cancel never reached the order's row");
+        waited += 1;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    dispute.commit().await.unwrap();
+    sync.await.unwrap().unwrap();
+    let (status, refund): (String, bool) = sqlx::query_as("SELECT status, refund_due FROM mf_shop_orders")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!((status.as_str(), refund), ("disputed", false));
+    // the cancel read again later: a disputed order isn't the shop's to cancel
+    makerfoundry::shop_orders::sync(&state).await.unwrap();
+    let status: String = sqlx::query_scalar("SELECT status FROM mf_shop_orders")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "disputed");
+}
+
 /// Issue #106: with "Reverse transfer" ticked in the Dashboard, Stripe took the transfer back, so
 /// MakerFoundry doesn't again; the 10% still goes back to the shop.
 #[tokio::test]

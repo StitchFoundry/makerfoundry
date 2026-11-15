@@ -1,5 +1,7 @@
 # Progress
 
+- 2026-11-15 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests; filed #147 (S1, shop cancel vs dispute race), fixed below.
+- Fixed #147: a shop's `order.cancel` changes the order only from the status it read (as `order.status` does), so a dispute or customer cancel in between stands; DB test holds the row while the cancel waits.
 - 2026-11-14 nightly sweep: no needs-triage issues; `cargo xtask ci` green on main with DB tests; cargo audit shows only the known dev-only rustix warning; no new findings filed.
 - Fixed #137: contest entries and makes are capped inside a transaction holding an advisory lock on (contest or design, account), so requests sent at once can't pass 3 entries / 10 makes. DB tests send them concurrently.
 - 2026-11-10 #97: the seller sales page shows, per paid sale, "Available on" (paid + the seller's hold days) and "Paid on (expected)" (next 1st after that, strictly after), plus a Seller Terms § 6 line; refunded, disputed and charged-back sales show their status only. Dates are UTC. Edge case unconfirmed in Stripe docs: money available exactly on a 1st is shown as paid the next 1st.
