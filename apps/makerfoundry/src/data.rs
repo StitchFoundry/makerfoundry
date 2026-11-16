@@ -217,11 +217,12 @@ pub async fn delete(State(state): State<AppState>, headers: HeaderMap, Form(f): 
 
 /// How many of `account`'s orders from shops are still with a shop or have a refund on its way:
 /// while any are, the data isn't deleted (the shop still needs the address and art, and the
-/// refund its order).
+/// refund its order). A disputed order counts: won, it goes back to the shop (issue #150).
 pub async fn orders_in_progress(pool: &PgPool, account: i64) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT count(*) FROM mf_shop_orders WHERE buyer_account = $1
-           AND (status IN ('paid', 'sent', 'received', 'proof_sent', 'approved', 'in_production', 'ready')
+           AND (status IN ('paid', 'sent', 'received', 'proof_sent', 'approved', 'in_production', 'ready',
+                           'disputed')
                 OR (refund_due AND fee_returned_at IS NULL))",
     )
     .bind(account)
