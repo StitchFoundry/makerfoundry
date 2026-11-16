@@ -11862,6 +11862,29 @@ async fn a_lost_shop_dispute_is_a_chargeback_and_a_refused_step_is_retried() {
     );
 }
 
+/// Issue #150: while a shop order is disputed (paused, and back with the shop if the dispute is
+/// won), the customer's data isn't deleted: the shop would be left without the address and art.
+#[tokio::test]
+async fn a_disputed_shop_order_keeps_the_customers_data() {
+    let Some((s, _state, _hub, st)) = open_shop().await else {
+        return;
+    };
+    let (bea, _path, _r) = paid_order(&s, &st).await;
+    s.pool_exec(
+        "UPDATE mf_shop_orders SET status = 'disputed', dispute_prev_status = 'in_production',
+             dispute_id = 'dp_test150', dispute_cents = paid_cents, disputed_at = now()",
+    )
+    .await;
+    let r = s.post("/account/data/delete", "confirm=delete", Some(&bea)).await;
+    assert!(r.body.contains("still in progress"), "{}", r.body);
+    assert_eq!(
+        s.scalar("SELECT count(*) FROM mf_shop_orders WHERE ship_to IS NOT NULL")
+            .await,
+        1,
+        "the address is kept"
+    );
+}
+
 /// Issue #147: a shop's cancel that read the order before a dispute paused it doesn't overwrite
 /// `disputed` (nor ask for a refund): the order's row is held by a transaction that disputes it
 /// while the cancel is applied, so the cancel's write waits for it and then finds a new status.
