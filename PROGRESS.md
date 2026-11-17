@@ -1,5 +1,7 @@
 # Progress
 
+- 2026-11-17 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests; filed #152 (S1), fixed below.
+- Fixed #152: a Dashboard refund Stripe holds as pending (or waiting on the buyer) keeps the order on the refund sweep and holds back the fee return until it succeeds; DB test added.
 - 2026-11-16 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests after the fix below; cargo audit shows only the known dev-only rustix warning; filed #150 (S2).
 - Fixed #150: a disputed shop order counts as in progress, so the customer's data (address, art) isn't deleted while a won dispute could send it back to the shop; DB test added.
 - 2026-11-15 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests; filed #147 (S1, shop cancel vs dispute race), fixed below.
