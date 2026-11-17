@@ -216,3 +216,26 @@ async fn the_note_counter_is_a_same_origin_script_and_its_policy_adds_only_that(
     assert!(!site.contains("script-src"), "{site}");
     assert_eq!(csp.replace(" script-src 'self';", ""), site);
 }
+
+/// Analytics is off unless `POSTHOG_KEY` is set (issue #128): no script on the page, and the
+/// policy stays the strict default.
+#[tokio::test]
+async fn without_a_posthog_key_pages_load_no_analytics() {
+    let (_, headers, body) = get("/").await;
+    assert!(!body.contains("analytics.js"));
+    let csp = headers.get(header::CONTENT_SECURITY_POLICY).unwrap().to_str().unwrap();
+    assert!(!csp.contains("script-src") && !csp.contains("connect-src"), "{csp}");
+}
+
+#[tokio::test]
+async fn the_analytics_script_is_served_as_javascript() {
+    let (status, headers, body) = get("/static/analytics.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        headers[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/javascript")
+    );
+    assert!(body.contains("globalPrivacyControl"));
+}

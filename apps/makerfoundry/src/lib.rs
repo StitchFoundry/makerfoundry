@@ -6,6 +6,7 @@
 
 pub mod accounts;
 pub mod activity;
+pub mod analytics;
 pub mod api;
 pub mod cloud;
 pub mod coarse;
@@ -101,6 +102,7 @@ const WEBHOOK_LIMIT_BYTES: usize = 1024 * 1024;
 const STYLESHEET: &str = include_str!("../static/site.css");
 const VIEWER_SCRIPT: &str = include_str!("../static/viewer.js");
 const NOTE_COUNTER_SCRIPT: &str = include_str!("../static/note-counter.js");
+const ANALYTICS_SCRIPT: &str = include_str!("../static/analytics.js");
 
 /// The order form and the customer's order page also run our note counter (issue #80; the owner
 /// agreed to its JavaScript, 2026-11-03): `CONTENT_SECURITY_POLICY` with only `script-src 'self'`
@@ -189,6 +191,7 @@ pub fn app(state: AppState) -> Router {
         .route("/static/site.css", get(stylesheet))
         .route("/static/viewer.js", get(viewer_script))
         .route("/static/note-counter.js", get(note_counter_script))
+        .route("/static/analytics.js", get(analytics_script))
         .route("/favicon.svg", get(favicon))
         .route("/robots.txt", get(robots))
         .route("/sitemap.xml", get(sitemap))
@@ -426,13 +429,21 @@ pub fn app(state: AppState) -> Router {
             shop_addresses,
             shop_orders::shops::subdomains,
         ))
-        .layer(header_layer(header::CONTENT_SECURITY_POLICY, CONTENT_SECURITY_POLICY))
+        .layer(csp_layer())
         .layer(header_layer(header::X_CONTENT_TYPE_OPTIONS, "nosniff"))
         .layer(header_layer(header::REFERRER_POLICY, "strict-origin-when-cross-origin"))
         .layer(header_layer(header::X_FRAME_OPTIONS, "DENY"))
         // HTTPS only, remembered for a year; not includeSubDomains, since other services may share
         // the domain (release audit, issue #40)
         .layer(header_layer(header::STRICT_TRANSPORT_SECURITY, "max-age=31536000"))
+}
+
+/// The default policy; with analytics on (issue #128) it also lets our own script run and send to
+/// the capture host, nothing else.
+fn csp_layer() -> SetResponseHeaderLayer<HeaderValue> {
+    let policy = analytics::page_policy(CONTENT_SECURITY_POLICY);
+    let value = HeaderValue::from_str(&policy).unwrap_or_else(|_| HeaderValue::from_static(CONTENT_SECURITY_POLICY));
+    SetResponseHeaderLayer::if_not_present(header::CONTENT_SECURITY_POLICY, value)
 }
 
 fn header_layer(name: HeaderName, value: &'static str) -> SetResponseHeaderLayer<HeaderValue> {
@@ -463,6 +474,11 @@ async fn viewer_script() -> Response {
 /// The note counter (issue #80); only the order form and the customer's order page load it.
 async fn note_counter_script() -> Response {
     script(NOTE_COUNTER_SCRIPT)
+}
+
+/// The funnel-event script (issue #128); pages carry it only when analytics is on.
+async fn analytics_script() -> Response {
+    script(ANALYTICS_SCRIPT)
 }
 
 fn script(body: &'static str) -> Response {

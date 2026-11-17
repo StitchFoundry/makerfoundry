@@ -91,6 +91,7 @@ pub fn page_with(title: &str, body: &str, signed_in: bool, preview: Option<&Prev
     } else {
         r#"<a href="/browse">Browse</a><a class="upload" href="/signup">Upload</a><a href="/signin">Sign in</a>"#
     };
+    let analytics = crate::analytics::page_script();
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -101,6 +102,7 @@ pub fn page_with(title: &str, body: &str, signed_in: bool, preview: Option<&Prev
 {head}
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/site.css">
+{analytics}
 </head>
 <body>
 <header class="top"><a class="brand" href="/">{MARK_SVG}<span>MakerFoundry</span></a><form class="hsearch" role="search" method="get" action="/browse"><input type="search" name="q" placeholder="Search designs" aria-label="Search designs" maxlength="200"></form><nav>{nav}</nav></header>
