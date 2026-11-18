@@ -1,5 +1,7 @@
 # Progress
 
+- 2026-11-18 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests; cargo audit shows only the known dev-only rustix warning; POST routes all origin-checked; filed #155 (S3).
+- Fixed #155: a paid design's file sent on a buyer's web-app link is `private, no-store` (free files stay `public, max-age=300`); test checks both.
 - 2026-11-16 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests after the fix below; cargo audit shows only the known dev-only rustix warning; filed #150 (S2).
 - Fixed #150: a disputed shop order counts as in progress, so the customer's data (address, art) isn't deleted while a won dispute could send it back to the shop; DB test added.
 - 2026-11-15 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests; filed #147 (S1, shop cancel vs dispute race), fixed below.
