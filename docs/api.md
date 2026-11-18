@@ -34,6 +34,10 @@ Headers: `Authorization: Bearer <Foundry Account session token>`,
 - `file_name` decides how an embroidery file is read (its extension); only its last part is kept.
 - `photos` (optional): up to 6. They're saved again without their metadata (location, camera).
 - `app` (optional): the app and its version, for MakerFoundry's log.
+- `title` (up to 100 characters), `description` (up to 2000) and `tags` (up to 10, 30 characters each,
+  lower-cased) (optional, #129): plain text that pre-fills the draft; the maker can change them on
+  the page. Control characters are dropped. Still to come under #129: category, preview, intent,
+  licence suggestion, remix, "Made with" badge, analytics.
 - Limits are the site's: embroidery files up to 4 MB, laser files up to 8 MB, 64 MB in all
   (before base64), 50 designs a day and 500 kept per account.
 
@@ -53,7 +57,7 @@ Every `error.message` is a sentence to show the person as it is.
 
 ## `GET https://makerfoundry.app/api/v1`
 `{"name": "MakerFoundry", "version": "0.1.0", "designs": "/api/v1/designs", "max_upload_bytes":
-67108864, "max_photos": 6}`: for an app to check it's talking to MakerFoundry and read the limits.
+67108864, "max_photos": 6, "fields": ["title", "description", "tags"], "max_title_chars": 100, ...}`: for an app to check it's talking to MakerFoundry and read the limits.
 
 ## `GET https://makerfoundry.app/api/v1/designs/{id}/file/{name}` (Open in StitchFoundry)
 A free, published embroidery design's file, for StitchFoundry's web app, which opens it from
