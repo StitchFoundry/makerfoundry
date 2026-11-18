@@ -1,5 +1,6 @@
 # Progress
 
+- 2026-11-18 #129 (first slice): `POST /api/v1/designs` accepts optional `title`, `description` and `tags`, cleaned and capped, filling only empty fields; `GET /api/v1` advertises the limits. Unit test added; `cargo xtask ci` green; Docker build not run (no daemon here). Left: category, preview/photos, intent, licence suggestion (NC can't sell), remix_of, Made-with badge, analytics, admin view, ownership checkbox.
 - 2026-11-16 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests after the fix below; cargo audit shows only the known dev-only rustix warning; filed #150 (S2).
 - Fixed #150: a disputed shop order counts as in progress, so the customer's data (address, art) isn't deleted while a won dispute could send it back to the shop; DB test added.
 - 2026-11-15 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests; filed #147 (S1, shop cancel vs dispute race), fixed below.
