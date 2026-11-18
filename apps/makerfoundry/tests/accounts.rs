@@ -5074,6 +5074,8 @@ async fn a_paid_design_opens_in_stitchfoundry_for_its_buyers() {
         .await;
     assert_eq!(ok.status, StatusCode::OK, "{}", ok.body);
     assert!(ok.body.starts_with("#PES"));
+    // a bought file is the buyer's alone: never kept in a shared cache (issue #155)
+    assert_eq!(ok.headers[header::CACHE_CONTROL], "private, no-store");
     // without it, with a wrong one, or for another design: refused
     for bad in [String::new(), "0".repeat(48), "nothex".into()] {
         let r = s.api("GET", &format!("{path}?t={bad}"), None, None, &json!({})).await;
@@ -5090,6 +5092,7 @@ async fn a_paid_design_opens_in_stitchfoundry_for_its_buyers() {
         )
         .await;
     assert_eq!(r.status, StatusCode::OK, "a free design is anyone's anyway");
+    assert_eq!(r.headers[header::CACHE_CONTROL], "public, max-age=300");
     sqlx::query("UPDATE mf_designs SET price_cents = 300 WHERE id = $1")
         .bind(other)
         .execute(&s.pool)

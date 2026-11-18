@@ -352,7 +352,15 @@ async fn design_file_answer(state: &AppState, headers: &HeaderMap, id: i64, toke
                 HeaderValue::from_static("application/octet-stream"),
             ),
             (header::CONTENT_DISPOSITION, disposition),
-            (header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=300")),
+            // a bought file is the buyer's alone, never kept in a shared cache (issue #155)
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static(if bought {
+                    "private, no-store"
+                } else {
+                    "public, max-age=300"
+                }),
+            ),
         ],
         bytes,
     )
