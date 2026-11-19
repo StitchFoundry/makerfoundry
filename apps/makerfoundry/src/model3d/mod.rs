@@ -146,6 +146,11 @@ pub async fn landing(
     };
     let form = search::form_html(&q);
     let contests = contests::link_html(pool).await;
+    let share = if viewer.is_some() {
+        r#"<p class="actions"><a class="button" href="/3d/new">Share a model</a> <a class="button secondary" href="/3d/import">Import my models</a></p>"#
+    } else {
+        r#"<p class="actions"><a class="button" href="/signin?next=/3d/new">Share a model</a> <a class="button secondary" href="/signin?next=/3d/import">Import my models</a></p>"#
+    };
     let preview = if state.three_d {
         ""
     } else {
@@ -155,6 +160,7 @@ pub async fn landing(
         r#"<section class="hero">
   <h1>MakerFoundry 3D</h1>
   <p class="lead">Printable models shared and sold by the makers who designed them: STL, 3MF, OBJ and STEP, with the print settings that worked.</p>
+  {share}
   {contests}
   {preview}
 </section>
