@@ -1,5 +1,7 @@
 # Progress
 
+- 2026-11-19 nightly sweep: no needs-triage issues; `cargo xtask ci` green on main with DB tests; filed #158 (S4), fixed below.
+- Fixed #158: making a collection and saving to one count and insert under a per-account / per-collection advisory lock, so requests sent at once can't pass 100 collections / 1000 designs; DB test sends five creates at once.
 - 2026-11-16 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests after the fix below; cargo audit shows only the known dev-only rustix warning; filed #150 (S2).
 - Fixed #150: a disputed shop order counts as in progress, so the customer's data (address, art) isn't deleted while a won dispute could send it back to the shop; DB test added.
 - 2026-11-15 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests; filed #147 (S1, shop cancel vs dispute race), fixed below.
