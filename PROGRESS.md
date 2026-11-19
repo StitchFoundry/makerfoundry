@@ -1,5 +1,6 @@
 # Progress
 
+- 2026-11-19 #130: the header's Upload opens `/upload`, a chooser (embroidery or laser, 3D model, import my 3D models; signed-out visitors go via sign-in and back; 3D choices only once 3D is open); `/3d` has Share a model and Import my models buttons; the home 3D chip links to `/3d`; `/browse?kind=3d` redirects to `/3d` keeping the words. Header search already found 3D models (test added). `cargo xtask ci` green with DB tests; Docker build not run (no daemon here); pages not rendered at phone/desktop widths.
 - 2026-11-16 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests after the fix below; cargo audit shows only the known dev-only rustix warning; filed #150 (S2).
 - Fixed #150: a disputed shop order counts as in progress, so the customer's data (address, art) isn't deleted while a won dispute could send it back to the shop; DB test added.
 - 2026-11-15 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests; filed #147 (S1, shop cancel vs dispute race), fixed below.

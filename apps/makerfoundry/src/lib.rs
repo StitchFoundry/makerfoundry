@@ -185,6 +185,7 @@ pub fn app(state: AppState) -> Router {
     let shop_addresses = state.clone();
     let pages = Router::new()
         .route("/", get(home))
+        .route("/upload", get(upload_chooser))
         .route("/health", get(health))
         .route("/static/site.css", get(stylesheet))
         .route("/static/viewer.js", get(viewer_script))
@@ -500,6 +501,38 @@ async fn favicon() -> Response {
         .into_response()
 }
 
+/// `GET /upload`: what to share (the header's Upload button). Signed-out visitors are sent to sign
+/// in and then on to the page they chose.
+async fn upload_chooser(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    let viewer = accounts::current_user(&state, &headers).await;
+    let signed_in = viewer.is_some();
+    let link = |path: &str| {
+        if signed_in {
+            path.to_string()
+        } else {
+            format!("/signin?next={path}")
+        }
+    };
+    let mut items = format!(
+        r#"<li><a class="button" href="{e}">Embroidery or laser design</a> <span class="muted">DST, PES, JEF, SVG, DXF and more</span></li>"#,
+        e = link("/designs/new")
+    );
+    if model3d::open_to(&state, viewer.as_ref()).await {
+        items.push_str(&format!(
+            r#"<li><a class="button" href="{n}">3D model</a> <span class="muted">STL, 3MF, OBJ or STEP</span></li><li><a class="button secondary" href="{i}">Import my 3D models</a> <span class="muted">bring in what you already made elsewhere</span></li>"#,
+            n = link("/3d/new"),
+            i = link("/3d/import"),
+        ));
+    }
+    Html(page(
+        "Upload · MakerFoundry",
+        &format!(
+            r#"<section class="design"><h1>What would you like to share?</h1><ul class="choices">{items}</ul></section>"#
+        ),
+        signed_in,
+    ))
+}
+
 async fn home(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
     let signed_in = accounts::current_user(&state, &headers).await.is_some();
     let sparse = listings::published_count(&state).await < listings::SPARSE;
@@ -545,7 +578,7 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Html<String>
     };
     let chips = {
         let three = if state.three_d {
-            r#"<li><a href="/browse?kind=3d">3D print</a></li>"#
+            r#"<li><a href="/3d">3D print</a></li>"#
         } else {
             ""
         };

@@ -13499,7 +13499,7 @@ async fn the_home_page_is_a_marketplace_with_search_chips_and_shelves_of_cards()
         home.contains(r#"<form class="hsearch" role="search" method="get" action="/browse">"#),
         "{home}"
     );
-    assert!(home.contains(r#"class="upload" href="/signup">Upload"#), "{home}");
+    assert!(home.contains(r#"class="upload" href="/upload">Upload"#), "{home}");
     assert!(home.contains(r#"href="/browse?kind=laser">Laser"#) && !home.contains("3D print</a>"));
     assert!(home.contains("Be one of the first 100 founding creators") && home.contains("100 of 100 spots left"));
     assert!(!home.contains("<h2>Newest</h2>") && !home.contains("<h2>Trending</h2>"));
@@ -13508,7 +13508,7 @@ async fn the_home_page_is_a_marketplace_with_search_chips_and_shelves_of_cards()
     assert!(home.find("Be one of the first").unwrap() < home.find("DST, PES, JEF").unwrap());
     // search is on every page, and Upload goes to the new design page when signed in
     let browse = s.get("/browse", Some(&admin)).await.body;
-    assert!(browse.contains(r#"role="search""#) && browse.contains(r#"class="upload" href="/designs/new""#));
+    assert!(browse.contains(r#"role="search""#) && browse.contains(r#"class="upload" href="/upload""#));
     // eight designs, one by a founding creator: shelves of cards appear
     let mut ids = Vec::new();
     for i in 0..8 {
@@ -13848,4 +13848,60 @@ async fn a_founding_signup_lands_on_the_form_is_reminded_and_shows_to_admins_unt
     );
     // not for non-admins
     assert_eq!(s.get("/admin/founding", Some(&eli)).await.status, StatusCode::NOT_FOUND);
+}
+
+// ---------------------------------------------------------------- issue #130: finding 3D upload
+
+/// #130: the header's Upload opens a chooser that names every way to share, 3D included; a
+/// signed-out visitor is sent to sign in and back; `/3d` offers the same two buttons.
+#[tokio::test]
+async fn the_upload_chooser_and_the_3d_page_link_to_upload_and_import() {
+    let Some(s) = site_3d(Vec::new(), true).await else {
+        return;
+    };
+    let ann = s.sign_up("ann%40example.com").await;
+    let page = s.get("/upload", Some(&ann)).await.body;
+    for href in ["/designs/new", "/3d/new", "/3d/import"] {
+        assert!(page.contains(&format!(r#"href="{href}""#)), "{href}: {page}");
+    }
+    let out = s.get("/upload", None).await.body;
+    assert!(
+        out.contains(r#"href="/signin?next=/3d/new""#) && out.contains(r#"href="/signin?next=/3d/import""#),
+        "{out}"
+    );
+    let three = s.get("/3d", Some(&ann)).await.body;
+    assert!(
+        three.contains(r#"href="/3d/new""#) && three.contains(r#"href="/3d/import""#),
+        "{three}"
+    );
+    let three = s.get("/3d", None).await.body;
+    assert!(three.contains(r#"href="/signin?next=/3d/new""#), "{three}");
+    assert!(s.get("/", None).await.body.contains(r#"href="/3d">3D print"#));
+    // 3D is one place: /browse?kind=3d goes to /3d and keeps the words
+    let r = s.get("/browse?kind=3d&q=gear+box", None).await;
+    assert_eq!(r.location(), "/3d?q=gear%20box");
+}
+
+/// #130: before 3D opens, the chooser offers only embroidery and laser.
+#[tokio::test]
+async fn the_upload_chooser_hides_3d_until_it_opens() {
+    let Some(s) = site_3d(Vec::new(), false).await else {
+        return;
+    };
+    let page = s.get("/upload", None).await.body;
+    assert!(
+        page.contains("/designs/new") && !page.contains("/3d/new") && !page.contains("/3d/import"),
+        "{page}"
+    );
+}
+
+/// #130: the header search (`/browse?q=`) finds a published 3D model by its title.
+#[tokio::test]
+async fn the_header_search_finds_a_published_3d_model() {
+    let Some(s) = site_3d(Vec::new(), true).await else {
+        return;
+    };
+    let (_, id) = published_model(&s, "maker%40example.com", "maker").await;
+    let found = s.get("/browse?q=Cube", None).await.body;
+    assert!(found.contains(&format!(r#"href="/d/{id}/"#)), "{found}");
 }
