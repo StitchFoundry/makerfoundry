@@ -950,13 +950,25 @@ async fn show(state: AppState, headers: HeaderMap, id: i64) -> Response {
     let formats = if d.kind == "model3d" {
         let files = crate::model3d::upload::model_files(pool, id).await;
         let profiles = crate::model3d::upload::profiles(pool, id).await;
+        let yarn = crate::api::yarn_html(
+            &state,
+            pool,
+            &d,
+            id,
+            may_download,
+            maker
+                .as_ref()
+                .map_or("", |m| if m.name.is_empty() { &m.handle } else { &m.name }),
+        )
+        .await;
         format!(
-            "{}{}{}{}{}",
+            "{}{}{}{}{}{}",
             crate::model3d::remix::section(pool, id).await,
             also_by(pool, d.account_id, maker.as_ref().map(|m| m.handle.as_str())).await,
             crate::model3d::upload::profiles_html(id, &profiles, may_download),
             crate::model3d::scad::links_html(&state, id, &files, may_download),
-            crate::model3d::upload::public_files_html(id, &files, may_download)
+            crate::model3d::upload::public_files_html(id, &files, may_download),
+            yarn
         )
     } else {
         crate::files::public_html(id, first_format, &others, &converted, may_download)
