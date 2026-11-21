@@ -171,20 +171,7 @@ pub async fn save(
             }
         },
     };
-    let held: i64 = sqlx::query_scalar("SELECT count(*) FROM mf_collection_items WHERE collection_id = $1")
-        .bind(collection)
-        .fetch_one(pool)
-        .await
-        .unwrap_or(MAX_ITEMS);
-    if held < MAX_ITEMS
-        && let Err(e) = sqlx::query(
-            "INSERT INTO mf_collection_items (collection_id, design_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-        )
-        .bind(collection)
-        .bind(id)
-        .execute(pool)
-        .await
-    {
+    if let Err(e) = add_item(pool, collection, id).await {
         eprintln!("collections: save {id}: {e}");
     }
     Redirect::to(&format!("/d/{id}/{}", slug(&title))).into_response()
@@ -268,23 +255,66 @@ pub async fn create(State(state): State<AppState>, headers: HeaderMap, Form(f): 
         Ok(n) => n,
         Err(why) => return again(&why),
     };
-    if mine.len() as i64 >= MAX_COLLECTIONS {
-        return again(&format!("You can have up to {MAX_COLLECTIONS} collections."));
-    }
-    let made: Result<i64, _> =
-        sqlx::query_scalar("INSERT INTO mf_collections (account_id, name, public) VALUES ($1, $2, $3) RETURNING id")
-            .bind(user.account_id)
-            .bind(&name)
-            .bind(f.public == "yes")
-            .fetch_one(pool)
-            .await;
+    let made = make(pool, user.account_id, &name, f.public == "yes").await;
     match made {
-        Ok(id) => Redirect::to(&format!("/collections/{id}")).into_response(),
+        Ok(Some(id)) => Redirect::to(&format!("/collections/{id}")).into_response(),
+        Ok(None) => again(&format!("You can have up to {MAX_COLLECTIONS} collections.")),
         Err(e) => {
             eprintln!("collections: create: {e}");
             again("The collection couldn't be made just now. Please try again.")
         }
     }
+}
+
+/// Adds design `id` to `collection` (once), holding a lock on the collection so saves sent at the
+/// same moment can't take it past `MAX_ITEMS` (issue #158). At the cap, nothing is added.
+async fn add_item(pool: &PgPool, collection: i64, id: i64) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("mf-collection-items-{collection}"))
+        .execute(&mut *tx)
+        .await?;
+    let held: i64 = sqlx::query_scalar("SELECT count(*) FROM mf_collection_items WHERE collection_id = $1")
+        .bind(collection)
+        .fetch_one(&mut *tx)
+        .await?;
+    if held < MAX_ITEMS {
+        sqlx::query(
+            "INSERT INTO mf_collection_items (collection_id, design_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(collection)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await
+}
+
+/// Makes a collection for `account`, holding a lock on the account so collections made at the
+/// same moment can't take it past `MAX_COLLECTIONS` (issue #158) → its id, or `None` at the cap.
+async fn make(pool: &PgPool, account: i64, name: &str, public: bool) -> Result<Option<i64>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("mf-collections-{account}"))
+        .execute(&mut *tx)
+        .await?;
+    let made: i64 = sqlx::query_scalar("SELECT count(*) FROM mf_collections WHERE account_id = $1")
+        .bind(account)
+        .fetch_one(&mut *tx)
+        .await?;
+    if made >= MAX_COLLECTIONS {
+        tx.rollback().await?;
+        return Ok(None);
+    }
+    let id: i64 =
+        sqlx::query_scalar("INSERT INTO mf_collections (account_id, name, public) VALUES ($1, $2, $3) RETURNING id")
+            .bind(account)
+            .bind(name)
+            .bind(public)
+            .fetch_one(&mut *tx)
+            .await?;
+    tx.commit().await?;
+    Ok(Some(id))
 }
 
 // ---------------------------------------------------------------- one collection
