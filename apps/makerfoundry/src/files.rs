@@ -138,6 +138,65 @@ async fn own(state: &AppState, headers: &HeaderMap, id: i64) -> Result<(User, Pg
     }
 }
 
+/// Another file to keep for a design (already in storage under `key`).
+struct NewFile<'a> {
+    design: i64,
+    name: String,
+    key: &'a str,
+    bytes: i64,
+    format: &'a str,
+}
+
+/// What became of a new file.
+#[derive(Debug, PartialEq)]
+enum Saved {
+    Kept,
+    /// The design has `MAX_FILES` other files already.
+    Full,
+    /// The design has another file of this format already.
+    HasFormat,
+}
+
+/// Keeps a file's row, holding a lock on the design so uploads sent at the same moment can't
+/// pass the cap or keep a format twice (issue #163).
+async fn save(pool: &PgPool, f: &NewFile<'_>) -> Result<Saved, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("mf-design-files-{}", f.design))
+        .execute(&mut *tx)
+        .await?;
+    let (count, same): (i64, i64) = sqlx::query_as(
+        "SELECT count(*), count(*) FILTER (WHERE format = $2) FROM mf_design_files WHERE design_id = $1",
+    )
+    .bind(f.design)
+    .bind(f.format)
+    .fetch_one(&mut *tx)
+    .await?;
+    let refused = if same > 0 {
+        Some(Saved::HasFormat)
+    } else if count >= MAX_FILES {
+        Some(Saved::Full)
+    } else {
+        None
+    };
+    if let Some(r) = refused {
+        tx.rollback().await?;
+        return Ok(r);
+    }
+    sqlx::query(
+        "INSERT INTO mf_design_files (design_id, file_name, file_key, file_bytes, format) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(f.design)
+    .bind(&f.name)
+    .bind(f.key)
+    .bind(f.bytes)
+    .bind(f.format)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Saved::Kept)
+}
+
 /// Another file for design `id`.
 pub async fn add(
     State(state): State<AppState>,
@@ -248,25 +307,30 @@ pub async fn add(
         let key = new_key("design")?;
         let size = bytes.len() as i64;
         storage.put(&key, bytes, "application/octet-stream").await?;
-        let saved = sqlx::query(
-            "INSERT INTO mf_design_files (design_id, file_name, file_key, file_bytes, format) VALUES ($1, $2, $3, $4, $5)",
-        )
-        .bind(id)
-        .bind(designs::safe_file_name(&file_name, Some(read.format())))
-        .bind(&key)
-        .bind(size)
-        .bind(read.format())
-        .execute(&pool)
-        .await;
-        if let Err(e) = saved {
+        let new = NewFile {
+            design: id,
+            name: designs::safe_file_name(&file_name, Some(read.format())),
+            key: &key,
+            bytes: size,
+            format: read.format(),
+        };
+        let saved = save(&pool, &new).await;
+        if !matches!(saved, Ok(Saved::Kept)) {
             // (best effort: an orphaned file costs a little storage)
             let _ = storage.delete(&key).await;
-            return Err(e.to_string());
         }
-        Ok::<(), String>(())
+        saved.map_err(|e| e.to_string())
     };
     match kept.await {
-        Ok(()) => Redirect::to(&format!("/designs/{id}")).into_response(),
+        Ok(Saved::Kept) => Redirect::to(&format!("/designs/{id}")).into_response(),
+        Ok(Saved::Full) => {
+            let why = format!("A design can have up to {} files.", MAX_FILES + 1);
+            designs::manage_page(&state, &pool, &user, id, &why).await
+        }
+        Ok(Saved::HasFormat) => {
+            let why = format!("This design already has a {} file.", read.format());
+            designs::manage_page(&state, &pool, &user, id, &why).await
+        }
         Err(e) => {
             eprintln!("files: {id}: {e}");
             designs::manage_page(
