@@ -1,5 +1,6 @@
 # Progress
 
+- 2026-11-21 #132 (first slice): `money::split_at(price, fee_percent)` with `FOUNDING_SELLER_FEE_PERCENT` = 5 and `FOUNDING_SELLER_LIMIT` = 50 (Bruce's approval, issue comment); `split` is unchanged (10%). Pure code + tests; nothing calls it yet. Left: `mf_founding_sellers` table and numbering, fee stored per order, badge, `/founding-sellers`, Open your shop flow, admin, Seller Terms wording, 30-day email. Docker build not run (no daemon). Blocked for paid sales by #76.
 - 2026-11-16 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests after the fix below; cargo audit shows only the known dev-only rustix warning; filed #150 (S2).
 - Fixed #150: a disputed shop order counts as in progress, so the customer's data (address, art) isn't deleted while a won dispute could send it back to the shop; DB test added.
 - 2026-11-15 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests; filed #147 (S1, shop cancel vs dispute race), fixed below.

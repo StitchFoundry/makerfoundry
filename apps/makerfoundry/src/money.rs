@@ -31,10 +31,26 @@ impl Split {
 /// `price` (cents, `MIN_PRICE..=MAX_PRICE`) split: each part rounded to the nearest cent (halves
 /// up), the seller getting what's left, so the parts always add up to the price.
 pub fn split(price: i64) -> Option<Split> {
+    split_at(price, STANDARD_FEE_PERCENT)
+}
+
+/// MakerFoundry's standard fee, in whole percent.
+pub const STANDARD_FEE_PERCENT: i64 = 10;
+/// The Founding Seller fee for the first 12 months (Bruce approved 5%, issue #132).
+pub const FOUNDING_SELLER_FEE_PERCENT: i64 = 5;
+/// How many Founding Sellers there are.
+pub const FOUNDING_SELLER_LIMIT: i64 = 50;
+
+/// Like `split`, with MakerFoundry's fee at `fee_percent` (0..=100) instead of 10%. The card fee
+/// is never discounted. `None` for a price out of range or a percent out of range.
+pub fn split_at(price: i64, fee_percent: i64) -> Option<Split> {
+    if !(0..=100).contains(&fee_percent) {
+        return None;
+    }
     if !(MIN_PRICE..=MAX_PRICE).contains(&price) {
         return None;
     }
-    let fee = (price * 10 + 50) / 100;
+    let fee = (price * fee_percent + 50) / 100;
     let processing = (price * 29 + 500) / 1000 + 30;
     let seller = price - fee - processing;
     (seller > 0).then_some(Split {
@@ -87,6 +103,32 @@ pub fn parse_dollars(text: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_founding_seller_pays_the_lower_fee_and_the_card_fee_is_unchanged() {
+        let std = split(500).unwrap();
+        let f = split_at(500, FOUNDING_SELLER_FEE_PERCENT).unwrap();
+        assert_eq!((std.fee, f.fee), (50, 25));
+        assert_eq!(std.processing, f.processing);
+        assert_eq!(f.seller, 500 - 25 - f.processing);
+        assert_eq!(split_at(500, STANDARD_FEE_PERCENT), Some(std));
+    }
+
+    #[test]
+    fn split_at_always_adds_up_and_rejects_bad_percents() {
+        for price in (MIN_PRICE..=MAX_PRICE).step_by(37) {
+            for pct in [0, 5, 10, 100] {
+                if let Some(s) = split_at(price, pct) {
+                    assert_eq!(s.fee + s.processing + s.seller, price, "{price} {pct}");
+                    assert!(s.seller > 0);
+                }
+            }
+        }
+        assert_eq!(split_at(500, -1), None);
+        assert_eq!(split_at(500, 101), None);
+        assert_eq!(split_at(99, 5), None);
+        assert_eq!(split_at(105, 5).map(|s| s.fee), Some(5));
+    }
 
     #[test]
     fn a_sale_is_split_to_the_cent() {
