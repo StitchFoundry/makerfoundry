@@ -3078,6 +3078,50 @@ async fn refunds_made_in_the_stripe_dashboard_take_back_from_the_seller_once() {
 }
 
 #[tokio::test]
+async fn a_pending_dashboard_refund_is_checked_again_until_it_succeeds() {
+    let Some((s, st, _seller, id, state, _sent)) = disputes_site().await else {
+        return;
+    };
+    let (_buyer, order) = paid_sale(&s, &st, id).await;
+    // refunded in full in the Dashboard without "Reverse transfer"; Stripe holds the refund as
+    // pending while the balance is low (https://docs.stripe.com/refunds)
+    st.lock()
+        .unwrap()
+        .listed_refunds
+        .push(json!({"id": "re_wait_1", "object": "refund", "amount": 500,
+        "charge": "ch_pi_cs_test_1", "status": "pending", "transfer_reversal": null, "metadata": {}}));
+    let r = s
+        .stripe_event(WEBHOOK_SECRET, "evt_rw_1", "charge.refunded", refunded_charge(500))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(s.order_status(&order).await, "refunded");
+    // nothing moved yet, and the order is still to be checked
+    {
+        let f = st.lock().unwrap();
+        assert!(f.reversals.is_empty());
+        assert!(f.fee_refunds.is_empty());
+    }
+    assert_eq!(
+        s.scalar("SELECT count(*) FROM mf_orders WHERE refund_check_due").await,
+        1
+    );
+    // the refund goes through: the sweep takes the price back from the seller and returns the 10%
+    st.lock().unwrap().listed_refunds[0]["status"] = json!("succeeded");
+    makerfoundry::refunds::check_all(&state, &s.pool).await.unwrap();
+    {
+        let f = st.lock().unwrap();
+        assert_eq!(f.reversals.len(), 1);
+        assert_eq!(f.reversals[0].1["amount"], "500");
+        assert_eq!(f.fee_refunds.len(), 1);
+        assert_eq!(f.fee_refunds[0].1["amount"], "50");
+    }
+    assert_eq!(
+        s.scalar("SELECT count(*) FROM mf_orders WHERE refund_check_due").await,
+        0
+    );
+}
+
+#[tokio::test]
 async fn an_older_account_update_never_overwrites_a_newer_one() {
     let Some((s, _st, seller, _id)) = selling_site(vec![1001]).await else {
         return;
