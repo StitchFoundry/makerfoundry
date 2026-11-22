@@ -7350,8 +7350,10 @@ async fn a_noncommercial_licence_cant_have_a_price() {
         .await;
     assert!(r.body.contains("allow selling"), "{}", r.body);
     assert_eq!(
-        s.scalar(&format!("SELECT count(*) FROM mf_designs WHERE id = {id} AND status = 'draft'"))
-            .await,
+        s.scalar(&format!(
+            "SELECT count(*) FROM mf_designs WHERE id = {id} AND status = 'draft'"
+        ))
+        .await,
         1
     );
     // and in bulk
