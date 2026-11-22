@@ -181,6 +181,17 @@ pub const LICENCES: &[Licence] = &[
     },
 ];
 
+/// The licences that don't allow selling: Creative Commons NonCommercial (BY-NC, BY-NC-SA, BY-NC-ND).
+pub const NON_COMMERCIAL: &[&str] = &["cc-by-nc", "cc-by-nc-sa", "cc-by-nc-nd"];
+
+/// Shown when a listing under one of those licences has a price.
+pub const NO_SELLING: &str = "This licence doesn't allow selling. Pick another licence or make it free.";
+
+/// Whether a design under this licence (by id) may not be sold.
+pub fn forbids_selling(id: &str) -> bool {
+    NON_COMMERCIAL.contains(&id)
+}
+
 pub fn find(id: &str) -> Option<&'static Licence> {
     LICENCES.iter().find(|l| l.id == id)
 }
@@ -226,6 +237,17 @@ mod tests {
         }
         assert!(find_for("model3d", "nope").is_none());
         assert!(for_kind("embroidery").iter().all(|l| l.scope != Scope::Model3d));
+    }
+
+    #[test]
+    fn only_the_noncommercial_licences_forbid_selling() {
+        for l in LICENCES {
+            assert_eq!(forbids_selling(l.id), l.id.starts_with("cc-by-nc"), "{}", l.id);
+            assert_eq!(forbids_selling(l.id), l.name.contains("NonCommercial"), "{}", l.id);
+        }
+        assert_eq!(LICENCES.iter().filter(|l| forbids_selling(l.id)).count(), 3);
+        assert!(!forbids_selling("cc-by"));
+        assert!(!forbids_selling("nope"));
     }
 
     #[test]
