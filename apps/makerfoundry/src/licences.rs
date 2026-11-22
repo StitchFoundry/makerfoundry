@@ -195,6 +195,14 @@ pub fn find_for(kind: &str, id: &str) -> Option<&'static Licence> {
     find(id).filter(|l| l.allowed_for(kind))
 }
 
+/// The message shown when a NonCommercial licence is paired with a price (#133).
+pub const NC_NO_SALE: &str = "This licence doesn't allow selling. Pick another licence or make it free.";
+
+/// True for the Creative Commons NonCommercial licences: a listing under one can't have a price.
+pub fn forbids_selling(id: &str) -> bool {
+    matches!(id, "cc-by-nc" | "cc-by-nc-sa" | "cc-by-nc-nd")
+}
+
 impl Licence {
     fn allowed_for(&self, kind: &str) -> bool {
         self.scope == Scope::Both || kind == "model3d"
@@ -212,6 +220,17 @@ impl Licence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_noncommercial_licences_forbid_selling() {
+        for id in ["cc-by-nc", "cc-by-nc-sa", "cc-by-nc-nd"] {
+            assert!(forbids_selling(id), "{id}");
+            assert!(find(id).is_some(), "{id}");
+        }
+        for l in LICENCES.iter().filter(|l| !l.id.contains("-nc")) {
+            assert!(!forbids_selling(l.id), "{}", l.id);
+        }
+    }
 
     #[test]
     fn a_3d_licence_cant_go_on_an_embroidery_design() {

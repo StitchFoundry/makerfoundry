@@ -777,6 +777,8 @@ pub async fn publish(
             waiting.push(format!("{title} needs a category and a licence"));
         } else if let Some(why) = refused {
             waiting.push(format!("{title}: {}", why.trim_end_matches('.')));
+        } else if price > 0 && licence.as_deref().is_some_and(crate::licences::forbids_selling) {
+            waiting.push(format!("{title}: {}", crate::licences::NC_NO_SALE.trim_end_matches('.')));
         } else if price > 0 && !can_sell {
             waiting.push(format!("{title} has a price: finish setting up selling first"));
         } else if sqlx::query(

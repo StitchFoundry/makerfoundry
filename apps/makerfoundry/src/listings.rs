@@ -1565,6 +1565,9 @@ pub async fn save(
         Ok(p) => p,
         Err(why) => return again(&why),
     };
+    if price > 0 && licences::forbids_selling(&f.licence) {
+        return again(licences::NC_NO_SALE);
+    }
     if price > 0 && !can_sell {
         return again("To sell a design, first set up selling (Account › Selling). Until then, give it a price of 0.");
     }
@@ -1676,6 +1679,8 @@ pub async fn publish(
         _ => None,
     } {
         return designs::manage_page(&state, &pool, &user, id, &why).await;
+    } else if d.price_cents > 0 && d.licence.as_deref().is_some_and(licences::forbids_selling) {
+        Some(licences::NC_NO_SALE)
     } else if d.price_cents > 0 && !selling::can_sell(&state, &pool, user.account_id).await {
         Some("To sell this design, finish setting up selling first (Account › Selling), or make it free.")
     } else if f.confirm != "yes" {
