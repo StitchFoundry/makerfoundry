@@ -189,6 +189,9 @@ async fn main() -> ExitCode {
             },
         },
     };
+    if let Some(a) = makerfoundry::analytics::Analytics::from_env(|k| std::env::var(k).ok()) {
+        makerfoundry::analytics::install(a);
+    }
     let public_url = std::env::var("MF_PUBLIC_URL")
         .map(|u| u.trim_end_matches('/').to_string())
         .unwrap_or_else(|_| "https://makerfoundry.app".to_string());

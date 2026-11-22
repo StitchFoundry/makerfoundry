@@ -53,6 +53,77 @@ pub const PATTERNFOUNDRY_WEB: &str = "https://stitchfoundry.github.io/patternfou
 /// opened a served SVG and showed MakerFoundry's own sentence for one that isn't there.
 pub const PATTERNFOUNDRY_OPENS_LINKS: bool = true;
 
+/// YarnFoundry's web app (crochet patterns), which opens a 3D model's STL or OBJ from `?open=` the
+/// same way (issue #131): "Make it in crochet with YarnFoundry" on a model's page. Its site must be
+/// in `MF_API_ORIGINS` for the browser to fetch the file.
+pub const YARNFOUNDRY_WEB: &str = "https://app.yarnfoundry.app/";
+
+/// Whether a model under `licence` (`None`: none chosen) may be made into a crochet pattern, which is
+/// a derivative: not under an ND licence, MakerFoundry's own ones, all rights reserved, or none.
+pub fn allows_derivatives(licence: Option<&str>) -> bool {
+    licence.is_some_and(|l| crate::model3d::remix::allowed(l).is_none_or(|list| !list.is_empty()))
+}
+
+/// The file YarnFoundry opens for 3D model `id`: its STL (else OBJ), as (storage key, file name to
+/// send it under). `None` when the model has neither.
+pub async fn yarn_file(pool: &sqlx::PgPool, id: i64) -> Option<(String, String)> {
+    let (key, format): (String, String) = sqlx::query_as(
+        "SELECT file_key, format FROM mf_model_files WHERE design_id = $1 AND format IN ('stl', 'obj')
+         ORDER BY (format = 'stl') DESC, position LIMIT 1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()?;
+    let stem = crate::listings::slug(
+        &designs::design(pool, id)
+            .await
+            .ok()
+            .flatten()
+            .map(|d| d.title)
+            .unwrap_or_default(),
+    );
+    let stem = if stem.is_empty() { format!("model-{id}") } else { stem };
+    Some((key, format!("{stem}.{format}")))
+}
+
+/// The "Make it in crochet with YarnFoundry" link and its credit line for model `id`'s page, or
+/// nothing: shown only for a published model with an STL or OBJ, when 3D is open, its licence allows
+/// derivatives, and the viewer may download it (anyone if free, else buyers, its maker, admins).
+pub async fn yarn_html(
+    state: &crate::AppState,
+    pool: &sqlx::PgPool,
+    d: &designs::DesignRow,
+    id: i64,
+    may_download: bool,
+    maker: &str,
+) -> String {
+    if d.kind != "model3d"
+        || d.status != "published"
+        || !state.three_d
+        || !may_download
+        || !allows_derivatives(d.licence.as_deref())
+    {
+        return String::new();
+    }
+    let Some((_, name)) = yarn_file(pool, id).await else {
+        return String::new();
+    };
+    let href = if d.price_cents == 0 {
+        open_in(YARNFOUNDRY_WEB, &state.public_url, id, &name)
+    } else {
+        format!("/d/{id}/open?app=yarnfoundry")
+    };
+    let page = format!("{}/d/{id}", state.public_url.trim_end_matches('/'));
+    format!(
+        r#"<p class="actions yarn"><a class="button secondary" href="{href}" rel="noopener">Make it in crochet with YarnFoundry</a></p><p class="muted">Turns the shape into an amigurumi pattern. Credit the designer: {maker}, <a href="{page}">{page}</a>.</p>"#,
+        href = crate::pages::escape(&href),
+        maker = crate::pages::escape(maker),
+        page = crate::pages::escape(&page),
+    )
+}
+
 /// Which web apps open links yet (the switches above).
 #[derive(Clone, Copy, Debug)]
 pub struct Switches {
@@ -192,14 +263,27 @@ pub async fn open_paid(
         return back;
     };
     let (_, may) = crate::listings::access(&state, pool, Some(&viewer), &d, id).await;
-    let apps = web_apps(&d);
-    let chosen = apps
-        .iter()
-        .find(|(_, name)| name.eq_ignore_ascii_case(&q.app))
-        .or_else(|| apps.first());
-    let Some(&(app, _)) = chosen.filter(|_| may) else {
-        return back;
+    // a 3D model opens only in YarnFoundry, and only if its licence allows derivatives
+    let yarn = d.kind == "model3d" && allows_derivatives(d.licence.as_deref());
+    let (app, name) = if yarn {
+        let Some((_, name)) = yarn_file(pool, id).await else {
+            return back;
+        };
+        (YARNFOUNDRY_WEB, name)
+    } else {
+        let apps = web_apps(&d);
+        let chosen = apps
+            .iter()
+            .find(|(_, name)| name.eq_ignore_ascii_case(&q.app))
+            .or_else(|| apps.first());
+        let Some(&(app, _)) = chosen else {
+            return back;
+        };
+        (app, file_name(&d, id))
     };
+    if !may {
+        return back;
+    }
     let mut bytes = [0u8; 24];
     if getrandom::fill(&mut bytes).is_err() {
         return back;
@@ -217,7 +301,7 @@ pub async fn open_paid(
         eprintln!("api: open link {id}: {e}");
         return back;
     }
-    Redirect::to(&open_link(app, &state.public_url, id, &file_name(&d, id), Some(&token))).into_response()
+    Redirect::to(&open_link(app, &state.public_url, id, &name, Some(&token))).into_response()
 }
 
 /// Whether `token` is a buyer's link to design `id` that hasn't run out.
@@ -312,9 +396,23 @@ async fn design_file_answer(state: &AppState, headers: &HeaderMap, id: i64, toke
     // with a buyer's link (made once their right to it was checked), unless it was taken down
     let (seen, may) = crate::listings::access(state, pool, None, &d, id).await;
     let bought = !may && d.status != "removed" && !token.is_empty() && link_good(pool, token, id).await;
-    if (!seen && !bought) || !openable(&d) {
+    let model = d.kind == "model3d";
+    if (!seen && !bought) || !(openable(&d) || model) {
         return missing();
     }
+    // a 3D model's file is only for YarnFoundry: its STL or OBJ, if its licence allows derivatives
+    // and 3D is open to everyone
+    let yarn = if model {
+        if !state.three_d || !allows_derivatives(d.licence.as_deref()) {
+            return missing();
+        }
+        match yarn_file(pool, id).await {
+            Some(f) => Some(f),
+            None => return missing(),
+        }
+    } else {
+        None
+    };
     if !may && !bought {
         return error(
             StatusCode::FORBIDDEN,
@@ -327,7 +425,8 @@ async fn design_file_answer(state: &AppState, headers: &HeaderMap, id: i64, toke
             "Too many designs opened lately. Please wait a while.",
         );
     }
-    let bytes = match storage.get(&d.file_key).await {
+    let key = yarn.as_ref().map_or(d.file_key.as_str(), |(k, _)| k.as_str());
+    let bytes = match storage.get(key).await {
         Ok(Some(b)) => b,
         Ok(None) => return missing(),
         Err(e) => {
@@ -342,7 +441,7 @@ async fn design_file_answer(state: &AppState, headers: &HeaderMap, id: i64, toke
         .bind(id)
         .execute(pool)
         .await; // (a count; the file goes out anyway)
-    let name = file_name(&d, id);
+    let name = yarn.map_or_else(|| file_name(&d, id), |(_, n)| n);
     let disposition = HeaderValue::from_str(&format!("attachment; filename=\"{name}\""))
         .unwrap_or_else(|_| HeaderValue::from_static("attachment"));
     (
@@ -352,7 +451,15 @@ async fn design_file_answer(state: &AppState, headers: &HeaderMap, id: i64, toke
                 HeaderValue::from_static("application/octet-stream"),
             ),
             (header::CONTENT_DISPOSITION, disposition),
-            (header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=300")),
+            // a bought file is the buyer's alone, never kept in a shared cache (issue #155)
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static(if bought {
+                    "private, no-store"
+                } else {
+                    "public, max-age=300"
+                }),
+            ),
         ],
         bytes,
     )
@@ -388,6 +495,42 @@ pub struct NewDesign {
     photos: Vec<String>,
     /// The app and its version, for the log (`StitchFoundry 0.9.1`).
     app: String,
+    /// Optional pre-fill (#129): plain text, cut to the limits below.
+    title: String,
+    description: String,
+    tags: Vec<String>,
+}
+
+/// Limits for the pre-filled fields; `GET /api/v1` advertises them.
+pub const MAX_TITLE_CHARS: usize = 100;
+pub const MAX_DESCRIPTION_CHARS: usize = 2000;
+pub const MAX_TAGS: usize = 10;
+pub const MAX_TAG_CHARS: usize = 30;
+
+/// Plain text from an app: control characters (except newline in descriptions) dropped, trimmed,
+/// cut to `max` characters.
+pub fn plain_text(s: &str, max: usize, keep_newlines: bool) -> String {
+    let t: String = s
+        .chars()
+        .filter(|c| !c.is_control() || (keep_newlines && *c == '\n'))
+        .take(max)
+        .collect();
+    t.trim().to_string()
+}
+
+/// Up to `MAX_TAGS` lower-case tags, each plain text of at most `MAX_TAG_CHARS`, no empties or repeats.
+pub fn clean_tags(tags: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in tags {
+        let t = plain_text(t, MAX_TAG_CHARS, false).to_lowercase();
+        if !t.is_empty() && !out.contains(&t) {
+            out.push(t);
+        }
+        if out.len() >= MAX_TAGS {
+            break;
+        }
+    }
+    out
 }
 
 /// `POST /api/v1/designs`: a new draft → `201 {id, url, kind, format}`.
@@ -485,6 +628,22 @@ async fn answer(state: &AppState, headers: &HeaderMap, body: &[u8]) -> Response 
             .execute(pool)
                 .await
                 .map_err(|e| eprintln!("api: title of {id}: {e}"));
+            // pre-filled fields (#129): only fill what's empty; the maker edits them on the page
+            let title = plain_text(&d.title, MAX_TITLE_CHARS, false);
+            let description = plain_text(&d.description, MAX_DESCRIPTION_CHARS, true);
+            let tags = clean_tags(&d.tags);
+            let _ = sqlx::query(
+                "UPDATE mf_designs SET title = CASE WHEN $2 <> '' THEN $2 ELSE title END,
+                 description = CASE WHEN description = '' THEN $3 ELSE description END,
+                 tags = CASE WHEN cardinality(tags) = 0 THEN $4 ELSE tags END WHERE id = $1",
+            )
+            .bind(id)
+            .bind(&title)
+            .bind(&description)
+            .bind(&tags)
+            .execute(pool)
+            .await
+            .map_err(|e| eprintln!("api: pre-fill of {id}: {e}"));
             let app: String = d.app.chars().filter(|c| !c.is_control()).take(60).collect();
             eprintln!("api: design {id} from {}", if app.is_empty() { "an app" } else { &app });
             let read: Option<(String, String)> = sqlx::query_as("SELECT kind, format FROM mf_designs WHERE id = $1")
@@ -557,6 +716,11 @@ pub async fn about(State(state): State<AppState>, headers: HeaderMap) -> Respons
         "designs": "/api/v1/designs",
         "max_upload_bytes": designs::MAX_UPLOAD_BYTES,
         "max_photos": MAX_PHOTOS,
+        "fields": ["title", "description", "tags"],
+        "max_title_chars": MAX_TITLE_CHARS,
+        "max_description_chars": MAX_DESCRIPTION_CHARS,
+        "max_tags": MAX_TAGS,
+        "max_tag_chars": MAX_TAG_CHARS,
     }))
     .into_response();
     with_cors(&state, &headers, resp)
@@ -565,6 +729,17 @@ pub async fn about(State(state): State<AppState>, headers: HeaderMap) -> Respons
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prefilled_text_is_plain_and_capped() {
+        assert_eq!(plain_text("  a\u{7}b\nc ", 10, false), "abc");
+        assert_eq!(plain_text("a\nb", 10, true), "a\nb");
+        assert_eq!(plain_text(&"x".repeat(500), 100, false).len(), 100);
+        let tags: Vec<String> = ["Rose", "rose", " ", "A\u{0}B"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(clean_tags(&tags), vec!["rose", "ab"]);
+        let many: Vec<String> = (0..50).map(|i| format!("t{i}")).collect();
+        assert_eq!(clean_tags(&many).len(), MAX_TAGS);
+    }
 
     #[test]
     fn file_names_keep_only_their_last_part() {
