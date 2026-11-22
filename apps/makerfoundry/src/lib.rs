@@ -41,6 +41,7 @@ pub mod proofs;
 pub mod refunds;
 pub mod scan;
 pub mod selling;
+pub mod sharecard;
 pub mod shop_orders;
 pub mod sizes;
 pub mod storage;
@@ -194,6 +195,7 @@ pub fn app(state: AppState) -> Router {
         .route("/static/note-counter.js", get(note_counter_script))
         .route("/static/analytics.js", get(analytics_script))
         .route("/favicon.svg", get(favicon))
+        .route("/static/share.png", get(share_card))
         .route("/robots.txt", get(robots))
         .route("/sitemap.xml", get(sitemap))
         .route("/terms", get(legal::terms))
@@ -517,6 +519,21 @@ async fn favicon() -> Response {
         .into_response()
 }
 
+/// The home page's share picture (`og:image`).
+async fn share_card() -> Response {
+    match sharecard::png() {
+        Some(png) => (
+            [
+                (header::CONTENT_TYPE, "image/png"),
+                (header::CACHE_CONTROL, "public, max-age=86400"),
+            ],
+            png,
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 /// `GET /upload`: what to share (the header's Upload button). Signed-out visitors are sent to sign
 /// in and then on to the page they chose.
 async fn upload_chooser(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
@@ -619,14 +636,15 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Html<String>
     // 3D models open with MakerFoundry 3D (MF-35, `MF_3D`); until then the card says they're coming.
     let three_d_soon = if state.three_d { "" } else { " 3D models open soon." };
     let home_url = format!("{}/", state.public_url);
+    let card_url = format!("{}/static/share.png", state.public_url);
     let preview = pages::Preview {
         title: "MakerFoundry: designs for your machines",
         description: "Machine-embroidery designs, laser-cut files and 3D-print models, shared free or sold by the makers who made them.",
         url: &home_url,
-        image: None,
+        image: Some(&card_url),
     };
     Html(pages::page_with(
-        "MakerFoundry",
+        "MakerFoundry: embroidery, laser and 3D-print designs",
         &format!(
             r#"<section class="hero">
   <h1>Designs for your machines</h1>
