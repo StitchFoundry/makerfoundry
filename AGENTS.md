@@ -34,8 +34,11 @@ These rules come from the VectorCraft/StitchFoundry `CLAUDE.md` (kept for refere
    second CI job) before every commit. Never skip or delete a failing test to get green.
 3. Open a PR from `.github/pull_request_template.md` with `Fixes #N`. Never merge, never force-push.
    PRs touching payments, auth, secrets, LICENSE or CI workflows get `needs-review`.
-4. Update `docs/plan.md`, README Status and `PROGRESS.md` in the same PR; end with `claude-done`
-   (or `claude-blocked` plus a comment) and remove `claude-working`.
+4. Update `docs/plan.md` and README Status in the same PR. Do **not** edit `PROGRESS.md` (it makes
+   every other open PR conflict): add one new note `progress/<yyyy-mm-dd>-<issue-or-pr>.md` (done +
+   next 3 steps; see [`progress/README.md`](progress/README.md)). Only the periodic roll-up PR edits
+   `PROGRESS.md`. End with `claude-done` (or `claude-blocked` plus a comment) and remove
+   `claude-working`.
 5. CI rule: no workflow edits inside a feature PR; CI changes are their own task.
 Labels used across the family: `.github/labels.yml`.
 
