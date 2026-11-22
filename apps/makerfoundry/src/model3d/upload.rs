@@ -1194,14 +1194,16 @@ pub async fn add_files(
         let (state, pool, user) = (&state, &pool, &user);
         async move { crate::designs::manage_page(state, pool, user, id, &why).await }
     };
-    let (count, next): (i64, i32) =
-        sqlx::query_as("SELECT count(*), coalesce(max(position) + 1, 0) FROM mf_model_files WHERE design_id = $1")
-            .bind(id)
-            .fetch_one(&pool)
-            .await
-            .unwrap_or((0, 0));
+    let (count, kept_bytes, _) = match files_kept(&pool, id).await {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("model3d: files of {id}: {e}");
+            return again("The files couldn't be kept just now. Please try again in a few minutes.".into()).await;
+        }
+    };
     let room = MAX_FILES.saturating_sub(usize::try_from(count).unwrap_or(MAX_FILES));
     let mut new_files: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut new_bytes = 0usize;
     loop {
         match multipart.next_field().await {
             Ok(Some(field)) => {
@@ -1218,6 +1220,10 @@ pub async fn add_files(
                 }
                 if bytes.len() > MAX_FILE_BYTES {
                     return again(format!("{name} is larger than {} MB.", MAX_FILE_BYTES / (1024 * 1024))).await;
+                }
+                new_bytes = new_bytes.saturating_add(bytes.len());
+                if !fits(kept_bytes, new_bytes) {
+                    return again(too_big()).await;
                 }
                 new_files.push((name, bytes.to_vec()));
             }
@@ -1251,20 +1257,60 @@ pub async fn add_files(
     let result = async {
         let rows = store_files(storage, prepared, &mut stored).await?;
         let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+        // counted again under a per-model lock, so adds sent at once can't pass the caps (#170)
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!("mf-model-files-{id}"))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        let (count, kept_bytes, next) = files_kept(&mut *tx, id).await.map_err(|e| e.to_string())?;
+        if usize::try_from(count).unwrap_or(MAX_FILES).saturating_add(rows.len()) > MAX_FILES {
+            return Ok(Some(format!("A model can have up to {MAX_FILES} files.")));
+        }
+        if !fits(kept_bytes, new_bytes) {
+            return Ok(Some(too_big()));
+        }
         note_files(&mut tx, id, &rows, next).await?;
         super::search::refresh_facets(&mut *tx, id)
             .await
             .map_err(|e| e.to_string())?;
-        tx.commit().await.map_err(|e| e.to_string())
+        tx.commit().await.map_err(|e| e.to_string())?;
+        Ok::<_, String>(None)
     }
     .await;
-    if let Err(e) = result {
-        eprintln!("model3d: add files to {id}: {e}");
-        forget(storage, &stored).await;
-        return again("The files couldn't be kept just now. Please try again in a few minutes.".into()).await;
+    match result {
+        Ok(None) => {}
+        Ok(Some(why)) => {
+            forget(storage, &stored).await;
+            return again(why).await;
+        }
+        Err(e) => {
+            eprintln!("model3d: add files to {id}: {e}");
+            forget(storage, &stored).await;
+            return again("The files couldn't be kept just now. Please try again in a few minutes.".into()).await;
+        }
     }
     drop_zip(storage, &pool, id).await;
     Redirect::to(&format!("/designs/{id}")).into_response()
+}
+
+/// A model's files: how many, their bytes in all, and the next position.
+async fn files_kept<'e>(db: impl sqlx::PgExecutor<'e>, id: i64) -> Result<(i64, i64, i32), sqlx::Error> {
+    sqlx::query_as(
+        "SELECT count(*), coalesce(sum(file_bytes), 0)::bigint, coalesce(max(position) + 1, 0) FROM mf_model_files WHERE design_id = $1",
+    )
+    .bind(id)
+    .fetch_one(db)
+    .await
+}
+
+/// Whether `new` more bytes fit beside a model's `kept` ones within `MAX_MODEL_BYTES` (#170).
+fn fits(kept: i64, new: usize) -> bool {
+    usize::try_from(kept.max(0)).is_ok_and(|kept| kept.saturating_add(new) <= MAX_MODEL_BYTES)
+}
+
+fn too_big() -> String {
+    format!("A model can be up to {} MB in all.", MAX_MODEL_BYTES / (1024 * 1024))
 }
 
 /// `POST /3d/<id>/files/<file>/delete`: removes one of a model's files, with its pictures and
