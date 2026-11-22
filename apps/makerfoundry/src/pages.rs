@@ -87,9 +87,9 @@ pub fn page_with(title: &str, body: &str, signed_in: bool, preview: Option<&Prev
         }
     };
     let nav = if signed_in {
-        r#"<a href="/browse">Browse</a><a class="upload" href="/designs/new">Upload</a><a href="/account">Account</a>"#
+        r#"<a href="/browse">Browse</a><a class="upload" href="/upload">Upload</a><a href="/account">Account</a>"#
     } else {
-        r#"<a href="/browse">Browse</a><a class="upload" href="/signup">Upload</a><a href="/signin">Sign in</a>"#
+        r#"<a href="/browse">Browse</a><a class="upload" href="/upload">Upload</a><a href="/signin">Sign in</a>"#
     };
     let analytics = crate::analytics::page_script();
     format!(
