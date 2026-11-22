@@ -14062,3 +14062,114 @@ async fn the_header_search_finds_a_published_3d_model() {
     let found = s.get("/browse?q=Cube", None).await.body;
     assert!(found.contains(&format!(r#"href="/d/{id}/"#)), "{found}");
 }
+
+/// Issue #131: "Make it in crochet with YarnFoundry" shows on a free model that has an STL and a
+/// licence allowing derivatives, opens the same public file address the other Open-in links use,
+/// and is hidden on ND and all-rights-reserved licences, on a paid model for a non-buyer, and on a
+/// model with only STEP or 3MF.
+#[tokio::test]
+async fn a_model_page_links_to_yarnfoundry_only_where_it_may() {
+    let Some(s) = site_3d(Vec::new(), true).await else {
+        return;
+    };
+    let ann = model_maker(&s, "ann%40example.com", "ann").await;
+    let make = |files: Vec<(&'static str, Vec<u8>)>, title: &'static str, licence: &'static str, price: u32| {
+        let ann = ann.clone();
+        let s = &s;
+        async move {
+            let id = design_id(upload_model(s, &ann, &files, &[]).await.location());
+            let r = s
+                .post(
+                    &format!("/designs/{id}/edit"),
+                    &format!("title={title}&category=household&licence={licence}&price={price}"),
+                    Some(&ann),
+                )
+                .await;
+            assert_eq!(r.status, StatusCode::SEE_OTHER, "{}", r.body);
+            let r = s
+                .post(&format!("/designs/{id}/publish"), "confirm=yes", Some(&ann))
+                .await;
+            assert_eq!(r.status, StatusCode::SEE_OTHER, "{}", r.body);
+            id
+        }
+    };
+    let shown = make(vec![("a.stl", stl_cube(10.0))], "Round frog", "cc-by", 0).await;
+    let nd = make(vec![("b.stl", stl_cube(10.0))], "Nd frog", "cc-by-nd", 0).await;
+    let arr = make(vec![("c.stl", stl_cube(10.0))], "Arr frog", "all-rights-reserved", 0).await;
+    let step = make(
+        vec![("d.step", STEP_FILE.as_bytes().to_vec()), ("d.3mf", bambu_3mf())],
+        "Step frog",
+        "cc-by",
+        0,
+    )
+    .await;
+    let mf3 = make(vec![("e.3mf", bambu_3mf())], "Threemf frog", "cc-by", 0).await;
+    let paid = make(vec![("f.stl", stl_cube(10.0))], "Paid frog", "cc-by", 0).await;
+    // (selling isn't set up here: price it directly)
+    sqlx::query("UPDATE mf_designs SET price_cents = 500 WHERE id = $1")
+        .bind(paid)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+
+    let link = "Make it in crochet with YarnFoundry";
+    let page = s.get(&format!("/d/{shown}"), None).await.body;
+    assert!(page.contains(link), "{page}");
+    assert!(page.contains("Credit the designer: "), "{page}");
+    let href = page
+        .split(r#"<p class="actions yarn"><a class="button secondary" href=""#)
+        .nth(1)
+        .and_then(|t| t.split('"').next())
+        .unwrap()
+        .replace("&amp;", "&");
+    let want = makerfoundry::api::open_in(
+        makerfoundry::api::YARNFOUNDRY_WEB,
+        "https://makerfoundry.test",
+        shown,
+        "round-frog.stl",
+    );
+    assert_eq!(href, want);
+    // the address it opens serves the STL to the web app
+    let file = s
+        .get(&format!("/api/v1/designs/{shown}/file/round-frog.stl"), None)
+        .await;
+    assert_eq!(file.status, StatusCode::OK);
+
+    for (id, why) in [
+        (nd, "CC BY-ND"),
+        (arr, "all rights reserved"),
+        (step, "STEP and 3MF, no STL or OBJ"),
+        (mf3, "3MF only"),
+    ] {
+        let page = s.get(&format!("/d/{id}"), None).await.body;
+        assert!(!page.contains("YarnFoundry"), "{why}");
+        let file = s.get(&format!("/api/v1/designs/{id}/file/x.stl"), None).await;
+        assert_eq!(file.status, StatusCode::NOT_FOUND, "{why}");
+    }
+    // paid: hidden from a visitor and a non-buyer, never served without a buyer's link
+    assert!(!s.get(&format!("/d/{paid}"), None).await.body.contains("YarnFoundry"));
+    let other = s.join("bea%40example.com").await;
+    assert!(
+        !s.get(&format!("/d/{paid}"), Some(&other))
+            .await
+            .body
+            .contains("YarnFoundry")
+    );
+    let file = s.get(&format!("/api/v1/designs/{paid}/file/x.stl"), None).await;
+    assert_eq!(file.status, StatusCode::FORBIDDEN);
+    // its maker gets the buyer-style link
+    let mine = s.get(&format!("/d/{paid}"), Some(&ann)).await.body;
+    assert!(mine.contains(&format!("/d/{paid}/open?app=yarnfoundry")), "{mine}");
+}
+
+#[test]
+fn derivative_licences_for_crochet() {
+    use makerfoundry::api::allows_derivatives;
+    for l in ["cc-by", "cc0", "cc-by-sa", "cc-by-nc", "cc-by-nc-sa", "mit"] {
+        assert!(allows_derivatives(Some(l)), "{l}");
+    }
+    for l in ["cc-by-nd", "cc-by-nc-nd", "all-rights-reserved", "personal", "nonsense"] {
+        assert!(!allows_derivatives(Some(l)), "{l}");
+    }
+    assert!(!allows_derivatives(None));
+}
