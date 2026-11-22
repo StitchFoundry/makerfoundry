@@ -41,10 +41,10 @@ pub mod proofs;
 pub mod refunds;
 pub mod scan;
 pub mod selling;
+pub mod sharecard;
 pub mod shop_orders;
 pub mod sizes;
 pub mod storage;
-pub mod sharecard;
 pub mod stripe;
 
 use std::time::Duration;
