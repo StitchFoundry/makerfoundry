@@ -1,6 +1,7 @@
 # Progress
 
 - 2026-11-22 nightly sweep: no needs-triage issues; `cargo xtask ci` green on main with DB tests; cargo audit shows only the known dev-only rustix warning; filed #170 (S3), fixed below.
+- #133 slice 1: a listing under CC BY-NC, BY-NC-SA or BY-NC-ND can't have a price above $0: refused on the edit form, single publish and an import's bulk publish ("This licence doesn't allow selling. Pick another licence or make it free."). Unit test on the licence list, DB test for the three paths. Not run here (no build in this job); CI runs the gate. Left: the other slices (ownership checkboxes, original licence, profile mark, report link).
 - Fixed #170: adding files to a 3D model checks its 300 MB total, and counts files and bytes again under a per-model advisory lock before inserting, so adds sent at once can't pass 30 files; DB tests for both.
 - 2026-11-19 nightly sweep: no needs-triage issues; `cargo xtask ci` green on main with DB tests; filed #158 (S4), fixed below.
 - Fixed #158: making a collection and saving to one count and insert under a per-account / per-collection advisory lock, so requests sent at once can't pass 100 collections / 1000 designs; DB test sends five creates at once.

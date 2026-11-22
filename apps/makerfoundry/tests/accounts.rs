@@ -7247,6 +7247,65 @@ async fn bulk_publish_needs_the_confirmation_and_every_draft_its_details() {
     );
 }
 
+/// #133: a NonCommercial licence can't carry a price: refused on the edit form, single publish
+/// and an import's bulk publish.
+#[tokio::test]
+async fn a_noncommercial_licence_cant_have_a_price() {
+    let Some(s) = site_3d(Vec::new(), true).await else {
+        return;
+    };
+    let ann = model_maker(&s, "ann%40example.com", "ann").await;
+    for licence in ["cc-by-nc", "cc-by-nc-sa", "cc-by-nc-nd"] {
+        let id = detailed_model(&s, &ann, "Vase", licence).await;
+        let r = s
+            .post(
+                &format!("/designs/{id}/edit"),
+                &format!("title=Vase&category=household&licence={licence}&price=5"),
+                Some(&ann),
+            )
+            .await;
+        assert!(r.body.contains("allow selling"), "{licence}: {}", r.body);
+    }
+    // a draft already priced (set directly) can't be published under it
+    let id = detailed_model(&s, &ann, "Bowl", "cc-by-nc").await;
+    sqlx::query("UPDATE mf_designs SET price_cents = 500 WHERE id = $1")
+        .bind(id)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    let r = s
+        .post(&format!("/designs/{id}/publish"), "confirm=yes", Some(&ann))
+        .await;
+    assert!(r.body.contains("allow selling"), "{}", r.body);
+    assert_eq!(
+        s.scalar(&format!("SELECT count(*) FROM mf_designs WHERE id = {id} AND status = 'draft'"))
+            .await,
+        1
+    );
+    // and in bulk
+    let (cookie, iid) = three_model_import(&s).await;
+    s.post(&format!("/3d/import/{iid}/drafts"), "", Some(&cookie)).await;
+    s.post(
+        &format!("/3d/import/{iid}/details"),
+        "category=household&licence=cc-by-nc",
+        Some(&cookie),
+    )
+    .await;
+    sqlx::query("UPDATE mf_designs SET price_cents = 500 WHERE title = 'lamp'")
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    let r = s
+        .post(&format!("/3d/import/{iid}/publish"), "confirm=yes", Some(&cookie))
+        .await;
+    assert!(r.body.contains("lamp: This licence"), "{}", r.body);
+    assert_eq!(
+        s.scalar("SELECT count(*) FROM mf_designs WHERE title = 'lamp' AND status = 'draft'")
+            .await,
+        1
+    );
+}
+
 /// #139: an import's bulk publish checks each draft's licence against its parents, as a
 /// model's own publish does.
 #[tokio::test]
