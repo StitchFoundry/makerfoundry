@@ -70,7 +70,7 @@ async fn home_page_is_html_and_links_the_stylesheet() {
     assert_eq!(status, StatusCode::OK);
     assert!(headers[header::CONTENT_TYPE].to_str().unwrap().starts_with("text/html"));
     assert!(body.starts_with("<!doctype html>"));
-    assert!(body.contains("<title>MakerFoundry</title>"));
+    assert!(body.contains("<title>MakerFoundry: embroidery, laser and 3D-print designs</title>"));
     assert!(body.contains(r#"href="/static/site.css""#));
 }
 
@@ -80,6 +80,22 @@ async fn home_page_has_a_share_card() {
     for tag in ["og:title", "og:description", "og:url", "twitter:card"] {
         assert!(body.contains(tag), "missing {tag}");
     }
+}
+
+#[tokio::test]
+async fn home_page_share_card_has_a_large_image_that_is_served() {
+    let (_, _, body) = get("/").await;
+    assert!(
+        body.contains(r#"<meta property="og:image" content="https://makerfoundry.test/static/share.png">"#),
+        "{body}"
+    );
+    assert!(body.contains(r#"<meta name="twitter:card" content="summary_large_image">"#));
+    let request = Request::builder().uri("/static/share.png").body(Body::empty()).unwrap();
+    let response = app().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert!(bytes.starts_with(b"\x89PNG"));
 }
 
 #[tokio::test]
