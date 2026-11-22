@@ -396,6 +396,42 @@ pub struct NewDesign {
     photos: Vec<String>,
     /// The app and its version, for the log (`StitchFoundry 0.9.1`).
     app: String,
+    /// Optional pre-fill (#129): plain text, cut to the limits below.
+    title: String,
+    description: String,
+    tags: Vec<String>,
+}
+
+/// Limits for the pre-filled fields; `GET /api/v1` advertises them.
+pub const MAX_TITLE_CHARS: usize = 100;
+pub const MAX_DESCRIPTION_CHARS: usize = 2000;
+pub const MAX_TAGS: usize = 10;
+pub const MAX_TAG_CHARS: usize = 30;
+
+/// Plain text from an app: control characters (except newline in descriptions) dropped, trimmed,
+/// cut to `max` characters.
+pub fn plain_text(s: &str, max: usize, keep_newlines: bool) -> String {
+    let t: String = s
+        .chars()
+        .filter(|c| !c.is_control() || (keep_newlines && *c == '\n'))
+        .take(max)
+        .collect();
+    t.trim().to_string()
+}
+
+/// Up to `MAX_TAGS` lower-case tags, each plain text of at most `MAX_TAG_CHARS`, no empties or repeats.
+pub fn clean_tags(tags: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in tags {
+        let t = plain_text(t, MAX_TAG_CHARS, false).to_lowercase();
+        if !t.is_empty() && !out.contains(&t) {
+            out.push(t);
+        }
+        if out.len() >= MAX_TAGS {
+            break;
+        }
+    }
+    out
 }
 
 /// `POST /api/v1/designs`: a new draft → `201 {id, url, kind, format}`.
@@ -493,6 +529,22 @@ async fn answer(state: &AppState, headers: &HeaderMap, body: &[u8]) -> Response 
             .execute(pool)
                 .await
                 .map_err(|e| eprintln!("api: title of {id}: {e}"));
+            // pre-filled fields (#129): only fill what's empty; the maker edits them on the page
+            let title = plain_text(&d.title, MAX_TITLE_CHARS, false);
+            let description = plain_text(&d.description, MAX_DESCRIPTION_CHARS, true);
+            let tags = clean_tags(&d.tags);
+            let _ = sqlx::query(
+                "UPDATE mf_designs SET title = CASE WHEN $2 <> '' THEN $2 ELSE title END,
+                 description = CASE WHEN description = '' THEN $3 ELSE description END,
+                 tags = CASE WHEN cardinality(tags) = 0 THEN $4 ELSE tags END WHERE id = $1",
+            )
+            .bind(id)
+            .bind(&title)
+            .bind(&description)
+            .bind(&tags)
+            .execute(pool)
+            .await
+            .map_err(|e| eprintln!("api: pre-fill of {id}: {e}"));
             let app: String = d.app.chars().filter(|c| !c.is_control()).take(60).collect();
             eprintln!("api: design {id} from {}", if app.is_empty() { "an app" } else { &app });
             let read: Option<(String, String)> = sqlx::query_as("SELECT kind, format FROM mf_designs WHERE id = $1")
@@ -565,6 +617,11 @@ pub async fn about(State(state): State<AppState>, headers: HeaderMap) -> Respons
         "designs": "/api/v1/designs",
         "max_upload_bytes": designs::MAX_UPLOAD_BYTES,
         "max_photos": MAX_PHOTOS,
+        "fields": ["title", "description", "tags"],
+        "max_title_chars": MAX_TITLE_CHARS,
+        "max_description_chars": MAX_DESCRIPTION_CHARS,
+        "max_tags": MAX_TAGS,
+        "max_tag_chars": MAX_TAG_CHARS,
     }))
     .into_response();
     with_cors(&state, &headers, resp)
@@ -573,6 +630,17 @@ pub async fn about(State(state): State<AppState>, headers: HeaderMap) -> Respons
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prefilled_text_is_plain_and_capped() {
+        assert_eq!(plain_text("  a\u{7}b\nc ", 10, false), "abc");
+        assert_eq!(plain_text("a\nb", 10, true), "a\nb");
+        assert_eq!(plain_text(&"x".repeat(500), 100, false).len(), 100);
+        let tags: Vec<String> = ["Rose", "rose", " ", "A\u{0}B"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(clean_tags(&tags), vec!["rose", "ab"]);
+        let many: Vec<String> = (0..50).map(|i| format!("t{i}")).collect();
+        assert_eq!(clean_tags(&many).len(), MAX_TAGS);
+    }
 
     #[test]
     fn file_names_keep_only_their_last_part() {

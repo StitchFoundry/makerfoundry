@@ -92,7 +92,9 @@ pub async fn check_all(state: &AppState, pool: &PgPool) -> Result<(), sqlx::Erro
 
 async fn check(state: &AppState, pool: &PgPool, order: i64) {
     match settle(state, pool, order).await {
-        Ok(()) => {
+        // a refund still pending: checked again by the sweep, nothing to alert
+        Ok(false) => {}
+        Ok(true) => {
             let _ = sqlx::query("UPDATE mf_orders SET refund_check_due = false WHERE id = $1")
                 .bind(order)
                 .execute(pool)
@@ -123,10 +125,13 @@ async fn check(state: &AppState, pool: &PgPool, order: i64) {
 /// An order's status, payment, seller, price, tax, 10% and whether its 10% is still to go back.
 type Sale = (String, Option<String>, i64, i64, i64, i64, bool);
 
-/// The order's refunds as Stripe lists them, each one MakerFoundry didn't make taken care of once.
-async fn settle(state: &AppState, pool: &PgPool, order: i64) -> Result<(), String> {
+/// The order's refunds as Stripe lists them, each one MakerFoundry didn't make taken care of once
+/// it has succeeded; → false while one is still pending or waiting on the buyer (Stripe holds a
+/// card refund as pending while the balance is low, https://docs.stripe.com/refunds), so the
+/// sweep checks the order again.
+async fn settle(state: &AppState, pool: &PgPool, order: i64) -> Result<bool, String> {
     let Some(stripe) = state.stripe.as_ref() else {
-        return Ok(());
+        return Ok(true);
     };
     let row = sqlx::query(
         "SELECT status, stripe_payment_intent, seller_account, price_cents, tax_cents, fee_cents,
@@ -137,7 +142,7 @@ async fn settle(state: &AppState, pool: &PgPool, order: i64) -> Result<(), Strin
     .fetch_optional(pool)
     .await
     .map_err(|e| e.to_string())?;
-    let Some(row) = row else { return Ok(()) };
+    let Some(row) = row else { return Ok(true) };
     let get = |r: &sqlx::postgres::PgRow| -> Result<Sale, sqlx::Error> {
         Ok((
             r.try_get("status")?,
@@ -167,10 +172,15 @@ async fn settle(state: &AppState, pool: &PgPool, order: i64) -> Result<(), Strin
         .await
         .map_err(|e| e.to_string())?;
     let refunds = list.get("data").and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut waiting = false;
     for r in &refunds {
         let ours = r.pointer("/metadata/order").is_some() || r.pointer("/metadata/shop_order").is_some();
         let id = r.get("id").and_then(Value::as_str).unwrap_or("");
-        if ours || r.get("status").and_then(Value::as_str) != Some("succeeded") || !selling::is_stripe_id(id, "re_") {
+        let refund_status = r.get("status").and_then(Value::as_str);
+        if !ours && matches!(refund_status, Some("pending" | "requires_action")) {
+            waiting = true;
+        }
+        if ours || refund_status != Some("succeeded") || !selling::is_stripe_id(id, "re_") {
             continue;
         }
         let amount = r.get("amount").and_then(Value::as_i64).unwrap_or(0);
@@ -191,10 +201,13 @@ async fn settle(state: &AppState, pool: &PgPool, order: i64) -> Result<(), Strin
             done.await.map_err(|e: sqlx::Error| e.to_string())?;
         }
     }
+    if waiting {
+        return Ok(false);
+    }
     if status == "refunded" && fee_waiting {
         selling::return_fee(stripe, pool, order).await?;
     }
-    Ok(())
+    Ok(true)
 }
 
 /// An admin's one-off task (issue #91): every seller's Stripe account given the payout delay
