@@ -10497,6 +10497,91 @@ async fn makes_posted_at_once_stay_within_the_cap() {
     assert_eq!(turned_away, 2, "the other two are told why");
 }
 
+/// Issue #158: collections made at the same moment can't take a member past the cap.
+#[tokio::test]
+async fn collections_made_at_once_stay_within_the_cap() {
+    let Some(s) = site().await else { return };
+    let bea = s.sign_up("bea%40example.com").await;
+    let bea_id: i64 = sqlx::query_scalar("SELECT account_id FROM mf_accounts ORDER BY account_id DESC LIMIT 1")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    // 98 already, then five at once: only two more fit
+    sqlx::query("INSERT INTO mf_collections (account_id, name) SELECT $1, 'List ' || n FROM generate_series(1, 98) n")
+        .bind(bea_id)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    let sends = (0..5).map(|_| s.post("/collections", "name=More", Some(&bea)));
+    let answers = join_all(sends).await;
+    assert_eq!(
+        s.scalar("SELECT count(*) FROM mf_collections WHERE NOT is_saved").await,
+        100
+    );
+    let turned_away = answers
+        .iter()
+        .filter(|r| r.body.contains("up to 100 collections"))
+        .count();
+    assert_eq!(turned_away, 3, "the other three are told why");
+}
+
+/// Issue #170: files added to a 3D model count towards its 300 MB in all.
+#[tokio::test]
+async fn adding_files_keeps_a_model_within_its_total_size() {
+    let Some(s) = site_3d(Vec::new(), true).await else {
+        return;
+    };
+    let (cookie, id) = published_model(&s, "maker%40example.com", "maker").await;
+    let before = s.scalar("SELECT count(*) FROM mf_model_files").await;
+    // its files already take all but 100 bytes of the 300 MB
+    let full = i64::try_from(makerfoundry::model3d::upload::MAX_MODEL_BYTES).unwrap() - 100;
+    sqlx::query(
+        "UPDATE mf_model_files SET file_bytes = CASE WHEN id = (SELECT min(id) FROM mf_model_files WHERE design_id = $1) THEN $2 ELSE 0 END WHERE design_id = $1",
+    )
+    .bind(id)
+    .bind(full)
+    .execute(&s.pool)
+    .await
+    .unwrap();
+    let r = add_model_files(&s, &cookie, id, &[("more.stl", stl_cube(5.0))]).await;
+    assert_ne!(r.status, StatusCode::SEE_OTHER, "refused");
+    assert!(r.body.contains("up to 300 MB in all"), "{}", r.body);
+    assert_eq!(s.scalar("SELECT count(*) FROM mf_model_files").await, before);
+}
+
+/// Issue #170: files added to a 3D model at the same moment can't take it past 30 files.
+#[tokio::test]
+async fn files_added_at_once_keep_a_model_within_its_file_cap() {
+    let Some(s) = site_3d(Vec::new(), true).await else {
+        return;
+    };
+    let (cookie, id) = published_model(&s, "maker%40example.com", "maker").await;
+    // copies of its first file (rows only) up to 29, then three adds at once: only one fits
+    let have = s
+        .scalar(&format!("SELECT count(*) FROM mf_model_files WHERE design_id = {id}"))
+        .await;
+    sqlx::query(
+        "INSERT INTO mf_model_files (design_id, role, format, file_name, file_key, file_bytes, position)
+         SELECT design_id, role, format, file_name, file_key || '-copy-' || n, 1, 100 + n FROM mf_model_files, generate_series(1, $2) n
+         WHERE id = (SELECT min(id) FROM mf_model_files WHERE design_id = $1)",
+    )
+    .bind(id)
+    .bind(i32::try_from(29 - have).unwrap())
+    .execute(&s.pool)
+    .await
+    .unwrap();
+    let file = [("more.stl", stl_cube(5.0))];
+    let sends = (0..3).map(|_| add_model_files(&s, &cookie, id, &file));
+    let answers = join_all(sends).await;
+    assert_eq!(
+        s.scalar(&format!("SELECT count(*) FROM mf_model_files WHERE design_id = {id}"))
+            .await,
+        30
+    );
+    let turned_away = answers.iter().filter(|r| r.body.contains("up to 30 files")).count();
+    assert_eq!(turned_away, 2, "the other two are told why");
+}
+
 /// Runs `futures` concurrently (interleaved on this task) → their answers in order.
 async fn join_all<F: std::future::Future>(futures: impl IntoIterator<Item = F>) -> Vec<F::Output> {
     let mut pending: Vec<_> = futures.into_iter().map(Box::pin).collect();
