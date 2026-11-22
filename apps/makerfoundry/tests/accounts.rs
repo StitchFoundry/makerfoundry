@@ -10453,6 +10453,34 @@ async fn makes_posted_at_once_stay_within_the_cap() {
     assert_eq!(turned_away, 2, "the other two are told why");
 }
 
+/// Issue #158: collections made at the same moment can't take a member past the cap.
+#[tokio::test]
+async fn collections_made_at_once_stay_within_the_cap() {
+    let Some(s) = site().await else { return };
+    let bea = s.sign_up("bea%40example.com").await;
+    let bea_id: i64 = sqlx::query_scalar("SELECT account_id FROM mf_accounts ORDER BY account_id DESC LIMIT 1")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    // 98 already, then five at once: only two more fit
+    sqlx::query("INSERT INTO mf_collections (account_id, name) SELECT $1, 'List ' || n FROM generate_series(1, 98) n")
+        .bind(bea_id)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    let sends = (0..5).map(|_| s.post("/collections", "name=More", Some(&bea)));
+    let answers = join_all(sends).await;
+    assert_eq!(
+        s.scalar("SELECT count(*) FROM mf_collections WHERE NOT is_saved").await,
+        100
+    );
+    let turned_away = answers
+        .iter()
+        .filter(|r| r.body.contains("up to 100 collections"))
+        .count();
+    assert_eq!(turned_away, 3, "the other three are told why");
+}
+
 /// Runs `futures` concurrently (interleaved on this task) → their answers in order.
 async fn join_all<F: std::future::Future>(futures: impl IntoIterator<Item = F>) -> Vec<F::Output> {
     let mut pending: Vec<_> = futures.into_iter().map(Box::pin).collect();
