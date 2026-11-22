@@ -465,6 +465,15 @@ pub struct BrowseQuery {
 pub async fn browse(State(state): State<AppState>, headers: HeaderMap, Query(q): Query<BrowseQuery>) -> Response {
     let signed_in = current_user(&state, &headers).await.is_some();
     let words = q.q.trim().chars().take(200).collect::<String>();
+    // 3D has one place to browse, `/3d`, with its own filters; the words come along
+    if q.kind == "3d" && state.three_d {
+        let to = if words.is_empty() {
+            "/3d".to_string()
+        } else {
+            format!("/3d?q={}", url_word(&words))
+        };
+        return Redirect::to(&to).into_response();
+    }
     let asked = match q.kind.as_str() {
         "embroidery" | "laser" => Some(q.kind.clone()),
         "3d" if state.three_d => Some("model3d".to_string()),
