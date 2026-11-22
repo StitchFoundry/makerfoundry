@@ -1,5 +1,7 @@
 # Progress
 
+- 2026-11-17 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests; filed #152 (S1), fixed below.
+- Fixed #152: a Dashboard refund Stripe holds as pending (or waiting on the buyer) keeps the order on the refund sweep and holds back the fee return until it succeeds; DB test added.
 - 2026-11-22 nightly sweep: no needs-triage issues; `cargo xtask ci` green on main with DB tests; cargo audit shows only the known dev-only rustix warning; filed #170 (S3), fixed below.
 - Fixed #170: adding files to a 3D model checks its 300 MB total, and counts files and bytes again under a per-model advisory lock before inserting, so adds sent at once can't pass 30 files; DB tests for both.
 - 2026-11-19 nightly sweep: no needs-triage issues; `cargo xtask ci` green on main with DB tests; filed #158 (S4), fixed below.
