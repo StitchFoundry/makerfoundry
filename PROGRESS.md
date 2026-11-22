@@ -1,5 +1,6 @@
 # Progress
 
+- 2026-11-21 #132 (first slice): `money::split_at(price, fee_percent)` with `FOUNDING_SELLER_FEE_PERCENT` = 5 and `FOUNDING_SELLER_LIMIT` = 50 (Bruce's approval, issue comment); `split` is unchanged (10%). Pure code + tests; nothing calls it yet. Left: `mf_founding_sellers` table and numbering, fee stored per order, badge, `/founding-sellers`, Open your shop flow, admin, Seller Terms wording, 30-day email. Docker build not run (no daemon). Blocked for paid sales by #76.
 - 2026-11-21 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests apart from the new repro below; cargo audit shows only the known dev-only rustix warning; filed #163 (S4).
 - Fixed #163: a design's extra file is kept inside a transaction holding an advisory lock on the design, so uploads sent at once can't keep a format twice or pass the 10-file cap; DB test sends three DSTs at once. The 3D add-files cap (30) counts the same unlocked way: left for a follow-up.
 - 2026-11-18 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests; cargo audit shows only the known dev-only rustix warning; POST routes all origin-checked; filed #155 (S3).
