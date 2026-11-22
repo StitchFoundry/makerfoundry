@@ -3932,6 +3932,31 @@ async fn a_design_has_more_formats_each_checked_and_downloadable() {
     assert_eq!(s.scalar("SELECT count(*) FROM mf_design_files").await, 0);
 }
 
+/// Issue #163: the same format sent three times at once is kept once.
+#[tokio::test]
+async fn files_added_at_once_keep_one_file_a_format() {
+    let Some(s) = site().await else { return };
+    let cookie = s.sign_up("ann%40example.com").await;
+    let rose = published(&s, &cookie, "anns", "Rose").await;
+    let path = format!("/designs/{rose}/files");
+    let stored = s.stored.lock().unwrap().len();
+    let sends = (0..3).map(|_| {
+        s.send(multipart(
+            &path,
+            &[("file", "rose.dst", sample(sf_formats::Format::Dst))],
+            &cookie,
+        ))
+    });
+    let answers = join_all(sends).await;
+    assert_eq!(s.scalar("SELECT count(*) FROM mf_design_files").await, 1);
+    let turned_away = answers
+        .iter()
+        .filter(|r| r.body.contains("already has a DST file"))
+        .count();
+    assert_eq!(turned_away, 2, "the other two are told why");
+    assert_eq!(s.stored.lock().unwrap().len(), stored + 1, "no file left behind");
+}
+
 #[tokio::test]
 async fn a_paid_designs_other_formats_are_for_its_buyers() {
     let Some((s, st, seller, id)) = selling_site(Vec::new()).await else {

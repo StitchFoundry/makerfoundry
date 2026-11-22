@@ -1,5 +1,7 @@
 # Progress
 
+- 2026-11-21 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests apart from the new repro below; cargo audit shows only the known dev-only rustix warning; filed #163 (S4).
+- Fixed #163: a design's extra file is kept inside a transaction holding an advisory lock on the design, so uploads sent at once can't keep a format twice or pass the 10-file cap; DB test sends three DSTs at once. The 3D add-files cap (30) counts the same unlocked way: left for a follow-up.
 - 2026-11-18 nightly sweep: no needs-triage issues; `cargo xtask ci` green with DB tests; cargo audit shows only the known dev-only rustix warning; POST routes all origin-checked; filed #155 (S3).
 - Fixed #155: a paid design's file sent on a buyer's web-app link is `private, no-store` (free files stay `public, max-age=300`); test checks both.
 - 2026-11-19 #130: the header's Upload opens `/upload`, a chooser (embroidery or laser, 3D model, import my 3D models; signed-out visitors go via sign-in and back; 3D choices only once 3D is open); `/3d` has Share a model and Import my models buttons; the home 3D chip links to `/3d`; `/browse?kind=3d` redirects to `/3d` keeping the words. Header search already found 3D models (test added). `cargo xtask ci` green with DB tests; Docker build not run (no daemon here); pages not rendered at phone/desktop widths.
