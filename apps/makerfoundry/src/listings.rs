@@ -1038,7 +1038,8 @@ async fn show(state: AppState, headers: HeaderMap, id: i64) -> Response {
             let image = match (model_picture, photo) {
                 (Some(f), _) => Some(format!("{}/3d/{id}/files/{f}/hero", state.public_url)),
                 (None, Some(p)) => Some(format!("{}/designs/{id}/photos/{p}/large", state.public_url)),
-                _ => None,
+                // no picture of its own: show the home page's share card
+                _ => Some(format!("{}/static/share.png", state.public_url)),
             };
             let by = maker
                 .as_ref()
