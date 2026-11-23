@@ -5451,6 +5451,25 @@ async fn a_shared_link_to_a_design_shows_its_title_words_and_photo() {
     assert!(s.get("/browse", None).await.body.contains("shared and sold by makers"));
 }
 
+#[tokio::test]
+async fn a_shared_link_to_a_design_without_a_photo_shows_the_home_card() {
+    let Some(s) = site().await else { return };
+    let ann = s.sign_up("ann%40example.com").await;
+    let id = published(&s, &ann, "anns", "Plain+Rose").await;
+    sqlx::query("DELETE FROM mf_design_photos WHERE design_id = $1")
+        .bind(id)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    let page = s.get(&format!("/d/{id}"), None).await.body;
+    for tag in [
+        r#"<meta property="og:image" content="https://makerfoundry.test/static/share.png">"#,
+        r#"<meta name="twitter:card" content="summary_large_image">"#,
+    ] {
+        assert!(page.contains(tag), "{tag} in {page}");
+    }
+}
+
 // ---------------------------------------------------------------- MF-22: activity
 
 #[tokio::test]
