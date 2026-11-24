@@ -1,0 +1,48 @@
+name: Dependabot auto-merge
+on: pull_request
+permissions: {}
+jobs:
+  automerge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Decide
+        id: decide
+        env:
+          TYPE: ${{ steps.meta.outputs.update-type }}
+          ECO: ${{ steps.meta.outputs.package-ecosystem }}
+          NEW: ${{ steps.meta.outputs.new-version }}
+          GROUPS: ${{ steps.meta.outputs.dependency-group }}
+          UPDATES: ${{ steps.meta.outputs.updated-dependencies-json }}
+        run: |
+          reason=""
+          zero_minor() { echo "$1" | grep -Eq '^0\.' ; }
+          if [ "$ECO" = "github_actions" ]; then reason="workflow-file bumps stay manual"
+          elif [ "$TYPE" != "version-update:semver-patch" ] && [ "$TYPE" != "version-update:semver-minor" ]; then reason="not a patch or minor update ($TYPE)"
+          elif [ "$TYPE" = "version-update:semver-minor" ] && zero_minor "$NEW"; then reason="0.x minor bump counts as breaking"
+          elif echo "$UPDATES" | jq -e 'map(select(.updateType != "version-update:semver-patch" and .updateType != "version-update:semver-minor" or (.updateType == "version-update:semver-minor" and (.newVersion | startswith("0."))))) | length > 0' >/dev/null; then reason="group contains a major or 0.x-minor bump"
+          fi
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+      - name: Enable auto-merge
+        if: steps.decide.outputs.reason == ''
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --auto --squash "$PR_URL"
+      - name: Say why it was skipped
+        if: steps.decide.outputs.reason != ''
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REASON: ${{ steps.decide.outputs.reason }}
+        run: |
+          if ! gh pr view "$PR_URL" --json comments -q '.comments[].body' | grep -q 'Auto-merge skipped'; then
+            gh pr comment "$PR_URL" --body "Auto-merge skipped: $REASON. A human merges this one."
+          fi
