@@ -1,9 +1,7 @@
 # Dependabot auto-merge
 
-Status: **rules and proposed workflow only.** The agent job that wrote this cannot create files
-under `.github/workflows/`, so Bruce adds the workflow (needs-review, Bruce merges) by copying the
-block below to `.github/workflows/dependabot-automerge.yml`. Pilot is patternfoundry (PR #217);
-keep the two files identical.
+Status: **workflow added** as `.github/workflows/dependabot-automerge.yml` (needs-review; Bruce
+merges). Pilot is patternfoundry (PR #217); keep the two files identical.
 
 ## Rules
 The workflow runs on `pull_request` from `dependabot[bot]` and only turns on squash auto-merge
@@ -23,10 +21,9 @@ Agent (Claude) PRs are never touched: the job is guarded by `github.actor == 'de
 Delete the workflow file, or disable it under Actions → "Dependabot auto-merge" → ⋯ → Disable.
 Auto-merge already enabled on an open PR can be cancelled with `gh pr merge --disable-auto <PR>`.
 
-## Proposed workflow
-Before adding, replace `<FULL-SHA>` with the full commit SHA of the current
-`dependabot/fetch-metadata` release (pinned like the other actions; look it up on the action's
-releases page, do not guess).
+## Workflow
+`dependabot/fetch-metadata` is pinned to the commit of tag v3.1.0 (`25dd0e34…`). The block below is
+the same as the file.
 
 ```yaml
 name: Dependabot auto-merge
@@ -41,7 +38,7 @@ jobs:
       pull-requests: write
     steps:
       - id: meta
-        uses: dependabot/fetch-metadata@<FULL-SHA> # vX.Y.Z
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Decide
