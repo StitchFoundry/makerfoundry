@@ -10690,6 +10690,47 @@ async fn files_added_at_once_keep_a_model_within_its_file_cap() {
     assert_eq!(turned_away, 2, "the other two are told why");
 }
 
+/// Issue #187: API keys made at the same moment can't take an account past five. (Spawned on a
+/// multi-threaded runtime: interleaved on one task, these requests run one after another.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn api_keys_made_at_once_stay_within_the_cap() {
+    let Some(s) = site_3d(Vec::new(), true).await else {
+        return;
+    };
+    let ann = model_maker(&s, "ann%40example.com", "ann").await;
+    for n in 0..3 {
+        api_key(&s, &ann, &format!("k{n}")).await;
+    }
+    // three already, then eight at once: only two more fit
+    let sends: Vec<_> = (0..8)
+        .map(|_| {
+            let app = s.app.clone();
+            let req = Request::post("/account/api-keys")
+                .header(header::HOST, HOST)
+                .header(header::ORIGIN, format!("https://{HOST}"))
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, ann.clone())
+                .body(Body::from("name=more"))
+                .unwrap();
+            tokio::spawn(async move {
+                let resp = app.oneshot(req).await.unwrap();
+                String::from_utf8_lossy(&resp.into_body().collect().await.unwrap().to_bytes()).into_owned()
+            })
+        })
+        .collect();
+    let mut answers = Vec::new();
+    for send in sends {
+        answers.push(send.await.unwrap());
+    }
+    assert_eq!(
+        s.scalar("SELECT count(*) FROM mf_api_keys WHERE revoked_at IS NULL")
+            .await,
+        5
+    );
+    let turned_away = answers.iter().filter(|r| r.contains("up to 5 keys")).count();
+    assert_eq!(turned_away, 6, "the other six are told why");
+}
+
 /// Runs `futures` concurrently (interleaved on this task) → their answers in order.
 async fn join_all<F: std::future::Future>(futures: impl IntoIterator<Item = F>) -> Vec<F::Output> {
     let mut pending: Vec<_> = futures.into_iter().map(Box::pin).collect();

@@ -277,6 +277,33 @@ pub struct KeyForm {
     name: String,
 }
 
+/// Keeps a new key for `account`, holding a lock on the account so keys made at the same moment
+/// can't take it past `MAX_KEYS` (issue #187) → whether it was kept (false: at the cap).
+async fn add_key(pool: &sqlx::PgPool, account: i64, name: &str, key_hash: &[u8]) -> Result<bool, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("mf-api-keys-{account}"))
+        .execute(&mut *tx)
+        .await?;
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM mf_api_keys WHERE account_id = $1 AND revoked_at IS NULL")
+            .bind(account)
+            .fetch_one(&mut *tx)
+            .await?;
+    if count >= MAX_KEYS {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+    sqlx::query("INSERT INTO mf_api_keys (account_id, name, key_hash) VALUES ($1, $2, $3)")
+        .bind(account)
+        .bind(name)
+        .bind(key_hash)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
 /// `POST /account/api-keys`: a new key, shown once.
 pub async fn make(State(state): State<AppState>, headers: HeaderMap, axum::Form(f): axum::Form<KeyForm>) -> Response {
     if !same_origin(&headers) {
@@ -293,35 +320,24 @@ pub async fn make(State(state): State<AppState>, headers: HeaderMap, axum::Form(
     if name.is_empty() {
         return keys_page(&state, pool, user.account_id, None, "Say what the key is for.").await;
     }
-    let count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM mf_api_keys WHERE account_id = $1 AND revoked_at IS NULL")
-            .bind(user.account_id)
-            .fetch_one(pool)
-            .await
-            .unwrap_or(MAX_KEYS);
-    if count >= MAX_KEYS {
-        return keys_page(
-            &state,
-            pool,
-            user.account_id,
-            None,
-            &format!("You can have up to {MAX_KEYS} keys. Revoke one to make another."),
-        )
-        .await;
-    }
     let mut bytes = [0u8; 24];
     if getrandom::fill(&mut bytes).is_err() {
         return keys_page(&state, pool, user.account_id, None, "A key couldn't be made just now.").await;
     }
     let key = format!("mfk_{}", bytes.iter().map(|b| format!("{b:02x}")).collect::<String>());
-    let saved = sqlx::query("INSERT INTO mf_api_keys (account_id, name, key_hash) VALUES ($1, $2, $3)")
-        .bind(user.account_id)
-        .bind(&name)
-        .bind(hash(&key))
-        .execute(pool)
-        .await;
+    let saved = add_key(pool, user.account_id, &name, &hash(&key)).await;
     match saved {
-        Ok(_) => keys_page(&state, pool, user.account_id, Some(&key), "").await,
+        Ok(false) => {
+            keys_page(
+                &state,
+                pool,
+                user.account_id,
+                None,
+                &format!("You can have up to {MAX_KEYS} keys. Revoke one to make another."),
+            )
+            .await
+        }
+        Ok(true) => keys_page(&state, pool, user.account_id, Some(&key), "").await,
         Err(e) => {
             eprintln!("api keys: {e}");
             keys_page(&state, pool, user.account_id, None, "A key couldn't be made just now.").await

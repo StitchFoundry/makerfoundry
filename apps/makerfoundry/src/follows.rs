@@ -74,6 +74,31 @@ pub async fn unfollow(State(state): State<AppState>, headers: HeaderMap, Path(ha
     change(&state, &headers, &handle, false).await
 }
 
+/// Notes that `follower` follows `maker`, holding a lock on the follower so follows sent at the
+/// same moment can't take them past `MAX_FOLLOWS` (issue #187) → false at the cap.
+async fn add(pool: &PgPool, follower: i64, maker: i64) -> Result<bool, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("mf-follows-{follower}"))
+        .execute(&mut *tx)
+        .await?;
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM mf_follows WHERE follower_account = $1")
+        .bind(follower)
+        .fetch_one(&mut *tx)
+        .await?;
+    if count >= MAX_FOLLOWS {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+    sqlx::query("INSERT INTO mf_follows (follower_account, maker_account) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+        .bind(follower)
+        .bind(maker)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
 async fn change(state: &AppState, headers: &HeaderMap, handle: &str, on: bool) -> Response {
     if !same_origin(headers) {
         return forbidden();
@@ -86,31 +111,18 @@ async fn change(state: &AppState, headers: &HeaderMap, handle: &str, on: bool) -
         return Redirect::to(&back).into_response();
     };
     let done = if on {
-        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM mf_follows WHERE follower_account = $1")
-            .bind(user.account_id)
-            .fetch_one(pool)
-            .await
-            .unwrap_or(MAX_FOLLOWS);
-        if count >= MAX_FOLLOWS {
-            return Redirect::to(&back).into_response();
-        }
-        let done = sqlx::query(
-            "INSERT INTO mf_follows (follower_account, maker_account) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-        )
-        .bind(user.account_id)
-        .bind(maker)
-        .execute(pool)
-        .await;
-        if done.is_ok() {
+        let added = add(pool, user.account_id, maker).await;
+        if matches!(added, Ok(true)) {
             crate::notices::record(state, pool, maker, user.account_id, "follow", None).await;
         }
-        done
+        added.map(|_| ())
     } else {
         sqlx::query("DELETE FROM mf_follows WHERE follower_account = $1 AND maker_account = $2")
             .bind(user.account_id)
             .bind(maker)
             .execute(pool)
             .await
+            .map(|_| ())
     };
     if let Err(e) = done {
         eprintln!("follows: {e}");
