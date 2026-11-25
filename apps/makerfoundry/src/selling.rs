@@ -1849,4 +1849,33 @@ mod tests {
             assert!(!is_stripe_id(bad, "acct_"), "{bad}");
         }
     }
+
+    #[test]
+    fn only_our_paid_checkouts_give_an_order() {
+        let ev = |kind: &str, app: &str, order: &str| serde_json::json!({"type": kind, "data": {"object": {"metadata": {"app": app, "order": order}}}});
+        for kind in ["checkout.session.completed", "checkout.session.async_payment_succeeded"] {
+            assert_eq!(paid_order(&ev(kind, APP, "42")), Some(42), "{kind}");
+        }
+        // other events, other apps sharing the Stripe account, and bad order ids give nothing
+        assert_eq!(
+            paid_order(&ev("checkout.session.async_payment_failed", APP, "42")),
+            None
+        );
+        assert_eq!(paid_order(&ev("charge.refunded", APP, "42")), None);
+        assert_eq!(
+            paid_order(&ev("checkout.session.completed", "stitchfoundry", "42")),
+            None
+        );
+        for bad in ["", "x", "4.5", "-", "99999999999999999999"] {
+            assert_eq!(paid_order(&ev("checkout.session.completed", APP, bad)), None, "{bad}");
+        }
+        assert_eq!(paid_order(&serde_json::json!({})), None);
+        assert_eq!(
+            paid_order(&serde_json::json!({"type": "checkout.session.completed"})),
+            None
+        );
+        let no_order = serde_json::json!({"type": "checkout.session.completed",
+            "data": {"object": {"metadata": {"app": APP, "order": 42}}}});
+        assert_eq!(paid_order(&no_order), None, "a number, not a string");
+    }
 }
