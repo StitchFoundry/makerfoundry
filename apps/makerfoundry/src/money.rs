@@ -75,12 +75,9 @@ pub fn dollars(cents: i64) -> String {
 /// Dollars as typed (`4`, `4.5`, `$4.50`, `1,000`) → cents; `None` if it isn't an amount with at
 /// most two decimals. Empty is 0.
 pub fn parse_dollars(text: &str) -> Option<i64> {
-    let t: String = text
-        .trim()
-        .trim_start_matches('$')
-        .chars()
-        .filter(|c| *c != ',')
-        .collect();
+    let t = text.trim();
+    let t = t.strip_prefix('$').unwrap_or(t);
+    let t: String = t.chars().filter(|c| *c != ',').collect();
     if t.is_empty() {
         return Some(0);
     }
@@ -190,7 +187,9 @@ mod tests {
         ] {
             assert_eq!(parse_dollars(text), Some(cents), "{text}");
         }
-        for bad in ["4.505", "-4", "four", "4.5.0", ".", "1e3", "99999999", "4 50"] {
+        for bad in [
+            "4.505", "-4", "four", "4.5.0", ".", "1e3", "99999999", "4 50", "$$4", "$$", "$-4",
+        ] {
             assert_eq!(parse_dollars(bad), None, "{bad}");
         }
     }
