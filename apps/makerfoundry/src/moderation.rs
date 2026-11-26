@@ -1057,6 +1057,17 @@ pub async fn takedown(State(state): State<AppState>, headers: HeaderMap, Path(ri
             .execute(&pool)
             .await;
         log(&pool, Some(design), Some(rid), me.account_id, "takedown", &why).await;
+        // a checkout still open for it is closed, so nobody pays for a design they can't
+        // download (issue #192); the takedown itself never waits on Stripe
+        if crate::selling::close_checkouts(&state, &pool, design).await.is_err() {
+            return private(
+                "Taken down · MakerFoundry",
+                &format!(
+                    r#"<section class="form"><h1>Taken down</h1><p class="problem" role="alert">The design is down, but a checkout for it couldn't be closed at Stripe (or a payment for it is on its way). Check <a href="/admin/orders">Orders</a> later and refund any payment for design {design} once it's confirmed.</p><p><a href="/admin">Back to reports</a></p></section>"#
+                ),
+                true,
+            );
+        }
     }
     Redirect::to("/admin").into_response()
 }
