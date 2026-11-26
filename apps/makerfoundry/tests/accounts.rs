@@ -13585,6 +13585,62 @@ async fn deleting_your_data_closes_checkouts_for_your_designs() {
     );
 }
 
+/// Reports design `id` (anyone may) → the report's id.
+async fn report_design(s: &Site, id: i64) -> i64 {
+    s.post(
+        &format!("/d/{id}/report"),
+        "reason=trademark&details=A+famous+mouse.",
+        None,
+    )
+    .await;
+    s.scalar("SELECT max(id) FROM mf_reports").await
+}
+
+/// Issue #192: a takedown closes the design's open checkouts, so nobody pays for a design they
+/// can't download; one it can't close is told to the admin, and the design is down either way.
+#[tokio::test]
+async fn a_takedown_closes_the_designs_open_checkouts() {
+    let Some((s, st, _seller, id)) = selling_site(vec![1002]).await else {
+        return;
+    };
+    let bea = s.sign_up("bea%40example.com").await;
+    let admin = s.sign_up("ada%40example.com").await;
+    let r = s.post(&format!("/d/{id}/buy"), "", Some(&bea)).await;
+    assert!(r.location().ends_with("cs_test_1"), "{}", r.location());
+    let rid = report_design(&s, id).await;
+    let r = s
+        .post(&format!("/admin/reports/{rid}/takedown"), "", Some(&admin))
+        .await;
+    assert_eq!(r.location(), "/admin", "{}", r.body);
+    assert_eq!(st.lock().unwrap().expired, ["cs_test_1"]);
+    assert_eq!(
+        s.scalar("SELECT count(*) FROM mf_orders WHERE stripe_session = 'cs_test_1' AND status = 'expired'")
+            .await,
+        1
+    );
+    // a payment already made at Stripe can't be stopped: the admin is told, the design is down
+    sqlx::query("UPDATE mf_designs SET status = 'published', removed_reason = NULL WHERE id = $1")
+        .bind(id)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    let cal = s.sign_up("cal%40example.com").await;
+    s.post(&format!("/d/{id}/buy"), "", Some(&cal)).await;
+    st.lock().unwrap().sessions.get_mut("cs_test_2").unwrap().1 = true;
+    let rid = report_design(&s, id).await;
+    let r = s
+        .post(&format!("/admin/reports/{rid}/takedown"), "", Some(&admin))
+        .await;
+    assert!(r.body.contains("refund any payment"), "{}", r.body);
+    assert_eq!(
+        s.scalar(&format!(
+            "SELECT count(*) FROM mf_designs WHERE id = {id} AND status = 'removed'"
+        ))
+        .await,
+        1
+    );
+}
+
 /// Issue #82: the shop's `order.status` through the hub shows on the customer's order page in the
 /// shop's words, and the customer is emailed once per status with a link to this deploy's order
 /// page (a staging deploy's test mailbox here, as on staging).
