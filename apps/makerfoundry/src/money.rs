@@ -75,9 +75,10 @@ pub fn dollars(cents: i64) -> String {
 /// Dollars as typed (`4`, `4.5`, `$4.50`, `1,000`) → cents; `None` if it isn't an amount with at
 /// most two decimals. Empty is 0.
 pub fn parse_dollars(text: &str) -> Option<i64> {
-    let t: String = text
-        .trim()
-        .trim_start_matches('$')
+    let trimmed = text.trim();
+    let t: String = trimmed
+        .strip_prefix('$')
+        .unwrap_or(trimmed)
         .chars()
         .filter(|c| *c != ',')
         .collect();
@@ -248,7 +249,9 @@ mod tests {
     fn parse_dollars_caps_the_size_and_rejects_junk() {
         assert_eq!(parse_dollars("9999999.99"), Some(999_999_999));
         assert_eq!(parse_dollars("10000000"), None);
-        for bad in ["+4", "4.", "١٢", "4,5.0.0", "NaN", "inf", "\u{0}", "0x10", "$ 4"] {
+        for bad in [
+            "+4", "4.", "١٢", "4,5.0.0", "NaN", "inf", "\u{0}", "0x10", "$ 4", "$$4", "$$",
+        ] {
             // "4." has an empty fractional part and is accepted as 4; everything else is junk.
             if bad == "4." {
                 assert_eq!(parse_dollars(bad), Some(400));

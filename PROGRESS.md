@@ -1,5 +1,7 @@
 # Progress
 
+- 2026-11-26 #50: `parse_dollars` accepts only one leading `$` (`$$4` is refused); test added; `cargo xtask ci` green, Docker build not run here (no daemon).
+
 - 2026-11-22 #131 (redone from main after #162 was closed): a published 3D model with an STL or OBJ, a licence that allows derivatives (not ND, MakerFoundry's own, all rights reserved or none) and 3D open shows "Make it in crochet with YarnFoundry" under its downloads, with a credit line; free models link `app.yarnfoundry.app/?open=<file address>`, paid ones go through the buyer's 10-minute link. `/api/v1/designs/{id}/file/` now serves a model's STL/OBJ the same way. Release note: add `https://app.yarnfoundry.app` to `MF_API_ORIGINS` in Railway or browsers can't fetch the file. Not built or run in this job (CI runs the gate); page not screenshotted.
 
 - 2026-11-21 #132 (first slice): `money::split_at(price, fee_percent)` with `FOUNDING_SELLER_FEE_PERCENT` = 5 and `FOUNDING_SELLER_LIMIT` = 50 (Bruce's approval, issue comment); `split` is unchanged (10%). Pure code + tests; nothing calls it yet. Left: `mf_founding_sellers` table and numbering, fee stored per order, badge, `/founding-sellers`, Open your shop flow, admin, Seller Terms wording, 30-day email. Docker build not run (no daemon). Blocked for paid sales by #76.
