@@ -10,7 +10,7 @@ before paid sales). MF-7's app side is StitchFoundry's
 discount codes, pay-what-you-want. Owner: Bruce Wattendorf (SiteSentrix).
 
 ## What it is
-A place, like Thingiverse for 3D prints, where makers find, share and sell files for their
+A place where makers find, share and sell files for their
 machines:
 
 - **Machine embroidery designs**: DST, PES, PEC, JEF, EXP, VP3, XXX, HUS, U01 and more.
