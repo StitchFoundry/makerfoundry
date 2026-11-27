@@ -3122,6 +3122,46 @@ async fn a_pending_dashboard_refund_is_checked_again_until_it_succeeds() {
 }
 
 #[tokio::test]
+async fn a_dashboard_refund_pending_past_the_limit_alerts_the_admins_once() {
+    let Some((s, st, _seller, id, state, sent)) = disputes_site().await else {
+        return;
+    };
+    let (_buyer, _order) = paid_sale(&s, &st, id).await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let alerts = || -> usize {
+        sent.lock()
+            .unwrap()
+            .iter()
+            .filter(|v| v["mailpit"]["Subject"].as_str().unwrap().contains("still unfinished"))
+            .count()
+    };
+    // pending for 13 days: no alert
+    st.lock()
+        .unwrap()
+        .listed_refunds
+        .push(json!({"id": "re_old_1", "object": "refund",
+        "amount": 500, "charge": "ch_pi_cs_test_1", "status": "requires_action", "transfer_reversal": null,
+        "metadata": {}, "created": now - 13 * 86_400}));
+    s.stripe_event(WEBHOOK_SECRET, "evt_ro_1", "charge.refunded", refunded_charge(500))
+        .await;
+    makerfoundry::refunds::check_all(&state, &s.pool).await.unwrap();
+    assert_eq!(alerts(), 0);
+    // past 14 days: one alert, however often the sweep runs; the order stays on the sweep
+    st.lock().unwrap().listed_refunds[0]["created"] = json!(now - 15 * 86_400);
+    makerfoundry::refunds::check_all(&state, &s.pool).await.unwrap();
+    makerfoundry::refunds::check_all(&state, &s.pool).await.unwrap();
+    assert_eq!(alerts(), 1);
+    assert_eq!(
+        s.scalar("SELECT count(*) FROM mf_orders WHERE refund_check_due").await,
+        1
+    );
+    assert!(st.lock().unwrap().fee_refunds.is_empty());
+}
+
+#[tokio::test]
 async fn an_older_account_update_never_overwrites_a_newer_one() {
     let Some((s, _st, seller, _id)) = selling_site(vec![1001]).await else {
         return;

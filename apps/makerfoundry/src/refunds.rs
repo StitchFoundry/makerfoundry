@@ -122,6 +122,38 @@ async fn check(state: &AppState, pool: &PgPool, order: i64) {
     }
 }
 
+/// Days a Dashboard refund may stay pending (or waiting on the buyer) before the admins are told.
+const STUCK_AFTER_DAYS: i64 = 14;
+
+/// A refund still unfinished past `STUCK_AFTER_DAYS` (by its own `created` time, Unix seconds), the
+/// admins told once; the order stays on the sweep and the fee return keeps waiting.
+async fn alert_if_stuck(state: &AppState, pool: &PgPool, order: i64, refund_status: &str, created: Option<i64>) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+    let Some(created) = created.filter(|c| *c > 0) else {
+        return;
+    };
+    if now.saturating_sub(created) < STUCK_AFTER_DAYS.saturating_mul(86_400) {
+        return;
+    }
+    let first = sqlx::query(
+        "UPDATE mf_orders SET refund_stuck_alerted_at = now() WHERE id = $1 AND refund_stuck_alerted_at IS NULL",
+    )
+    .bind(order)
+    .execute(pool)
+    .await
+    .is_ok_and(|r| r.rows_affected() > 0);
+    if first {
+        eprintln!("ALERT selling: refund of order {order} still {refund_status} after {STUCK_AFTER_DAYS} days");
+        let text = format!(
+            "A refund of order {order}, made in the Stripe Dashboard, is still \"{refund_status}\" after {STUCK_AFTER_DAYS} days. MakerFoundry keeps checking it and holds the return of its 10% until it has succeeded; nothing else changes. This is the only alert about it.\n\nThe order is on {}/admin/orders.",
+            state.public_url.trim_end_matches('/')
+        );
+        crate::disputes::alert_admins(state, pool, &format!("Refund of order {order} still unfinished"), &text).await;
+    }
+}
+
 /// An order's status, payment, seller, price, tax, 10% and whether its 10% is still to go back.
 type Sale = (String, Option<String>, i64, i64, i64, i64, bool);
 
@@ -179,6 +211,8 @@ async fn settle(state: &AppState, pool: &PgPool, order: i64) -> Result<bool, Str
         let refund_status = r.get("status").and_then(Value::as_str);
         if !ours && matches!(refund_status, Some("pending" | "requires_action")) {
             waiting = true;
+            let created = r.get("created").and_then(Value::as_i64);
+            alert_if_stuck(state, pool, order, refund_status.unwrap_or("pending"), created).await;
         }
         if ours || refund_status != Some("succeeded") || !selling::is_stripe_id(id, "re_") {
             continue;
