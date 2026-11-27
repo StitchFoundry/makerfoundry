@@ -90,6 +90,9 @@ books and one name on card statements for both. What keeps the two apart:
   - **PaymentIntents:** Read and **Charges:** Read (a refunded sale's application fee)
   - **Connect › Application Fees:** Write (MakerFoundry's 10% given back to the seller on a refund)
   - **Connect › Accounts:** Write (sellers' Express accounts, their set-up and dashboard links)
+  - **Connect › Account Links:** Write (the "Set up payouts with Stripe" onboarding link; without
+    it a seller sees "Stripe can't be reached just now" and the log says `Stripe refused (403)`,
+    issue #76)
   - **Connect › Transfers:** Write (the tax taken back from the seller's transfer with sales tax
     on, MF-24, and a taxed sale's price before its refund; for a dispute, issue #90, the disputed
     price taken back and, if MakerFoundry wins, given back)
