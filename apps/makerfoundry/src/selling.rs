@@ -1877,5 +1877,8 @@ mod tests {
         let no_order = serde_json::json!({"type": "checkout.session.completed",
             "data": {"object": {"metadata": {"app": APP, "order": 42}}}});
         assert_eq!(paid_order(&no_order), None, "a number, not a string");
+        let missing_order = serde_json::json!({"type": "checkout.session.completed",
+            "data": {"object": {"metadata": {"app": APP}}}});
+        assert_eq!(paid_order(&missing_order), None, "no order key");
     }
 }
