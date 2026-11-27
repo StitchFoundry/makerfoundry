@@ -223,7 +223,13 @@ async fn main() -> ExitCode {
             std::env::var("RESEND_API_URL").ok().as_deref(),
         ),
     };
-    let limits = std::sync::Arc::new(makerfoundry::limits::Limits::default());
+    // staging only: relax every rate limit (ignored once MF_LAUNCHED=yes)
+    let (multiplier, why) =
+        makerfoundry::limits::multiplier_from(std::env::var("MF_RATE_LIMIT_MULTIPLIER").ok().as_deref(), launch_asked);
+    if let Some(why) = why {
+        eprintln!("{why}");
+    }
+    let limits = std::sync::Arc::new(makerfoundry::limits::Limits::with_multiplier(multiplier));
     let state = makerfoundry::AppState {
         cloud,
         db,
