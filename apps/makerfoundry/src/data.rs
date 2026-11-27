@@ -239,11 +239,25 @@ pub async fn erase(pool: &PgPool, account: i64) -> Result<Vec<String>, sqlx::Err
     // designs nobody has bought go, with everything on them; bought ones are unpublished and kept
     let gone: Vec<i64> = sqlx::query_scalar(
         "SELECT d.id FROM mf_designs d WHERE d.account_id = $1
-           AND NOT EXISTS (SELECT 1 FROM mf_orders o WHERE o.design_id = d.id AND o.status IN ('paid', 'refunded', 'disputed', 'chargeback'))",
+           AND NOT EXISTS (SELECT 1 FROM mf_orders o WHERE o.design_id = d.id AND o.status IN ('paid', 'refunded', 'disputed', 'chargeback'))
+         FOR UPDATE OF d",
     )
     .bind(account)
     .fetch_all(&mut *tx)
     .await?;
+    // their checkouts were closed (`selling::close_account_checkouts`); one started since then
+    // stops the deletion (issue #193). The rows are held, so a Buy can't keep a new one until
+    // this is done, and then finds the design gone.
+    let started: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM mf_orders WHERE design_id = ANY($1) AND status = 'pending'")
+            .bind(&gone)
+            .fetch_one(&mut *tx)
+            .await?;
+    if started > 0 {
+        return Err(sqlx::Error::Protocol(
+            "a checkout for one of the designs was started meanwhile".into(),
+        ));
+    }
     let mut keys: Vec<String> = sqlx::query_scalar(
         "SELECT file_key FROM mf_designs WHERE id = ANY($1)
          UNION ALL SELECT file_key FROM mf_design_files WHERE design_id = ANY($1)

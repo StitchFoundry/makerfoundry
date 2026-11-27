@@ -781,19 +781,49 @@ async fn buy_locked(
             "Stripe can't be reached just now. Please try again in a few minutes.",
         );
     }
-    if let Err(e) = sqlx::query("UPDATE mf_orders SET stripe_session = $2 WHERE id = $1")
+    match save_session(pool, order, id, sid).await {
+        Ok(true) => Redirect::to(url).into_response(),
+        Ok(false) => {
+            // the design was unpublished, taken down or deleted while Stripe made the checkout
+            // (issue #193): the buyer never gets its address, and it's closed at Stripe too
+            if let Err(e) = stripe
+                .post(&format!("/v1/checkout/sessions/{sid}/expire"), &[], None)
+                .await
+            {
+                eprintln!("selling: expiring checkout {sid} of order {order}: {e}");
+            }
+            problem_page("Buy a design", NOT_AVAILABLE)
+        }
+        Err(e) => {
+            eprintln!("selling: order {order}: {e}");
+            problem_page(
+                "Buy a design",
+                "Your purchase couldn't be started just now. Please try again.",
+            )
+        }
+    }
+}
+
+/// Order `order`'s checkout `sid` is kept, if design `design` is still published → `true`. The
+/// design's row is held (`FOR SHARE`) until it's kept, so an unpublish, takedown or deletion
+/// either waits and then finds the checkout to close, or comes first and the order is expired
+/// here with it (issue #193).
+async fn save_session(pool: &PgPool, order: i64, design: i64, sid: &str) -> Result<bool, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let published: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM mf_designs WHERE id = $1 AND status = 'published' FOR SHARE")
+            .bind(design)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let status = if published.is_some() { "pending" } else { "expired" };
+    sqlx::query("UPDATE mf_orders SET stripe_session = $2, status = $3 WHERE id = $1")
         .bind(order)
         .bind(sid)
-        .execute(pool)
-        .await
-    {
-        eprintln!("selling: order {order}: {e}");
-        return problem_page(
-            "Buy a design",
-            "Your purchase couldn't be started just now. Please try again.",
-        );
-    }
-    Redirect::to(url).into_response()
+        .bind(status)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(published.is_some())
 }
 
 /// A Checkout Session Stripe says is paid → order `order` paid and its sale in the ledger, once.
