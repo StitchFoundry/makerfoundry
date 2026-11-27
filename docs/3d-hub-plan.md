@@ -188,10 +188,10 @@ files from our creators before each parser is written):
 
 ## 6. Licences and remixes
 
-**The licence picker** (the owner's decision, 2026-10-30: licences like Thingiverse's and
-Printables'). The standard public licences are offered by name and linked to their official
-texts, never retyped; Printables' own "Standard Digital File License" is its text, so its place is
-taken by MakerFoundry's own licences, already in the approved Terms (§ 3).
+**The licence picker** (the owner's decision, 2026-10-30: Creative Commons and open licences).
+The standard public licences are offered by name and linked to their official texts, never
+retyped; MakerFoundry's own licences, already in the approved Terms (§ 3), cover the
+non-open cases.
 
 | Group | Licences |
 |---|---|
@@ -203,8 +203,7 @@ taken by MakerFoundry's own licences, already in the approved Terms (§ 3).
 | MakerFoundry's own (as for embroidery and laser designs) | Personal use, Small business (up to 200 items), Commercial |
 | Reserved | All rights reserved |
 
-Printables also lists an "Open Community License"; it's left out until its text and author are
-checked. Embroidery and laser designs keep their three; paid 3D models (if ever sold) would use
+Other community licences are left out until their text and author are checked. Embroidery and laser designs keep their three; paid 3D models (if ever sold) would use
 MakerFoundry's own three, as paid designs do.
 
 A remix links one or more parents. Publishing a remix checks every parent (the licences' own
@@ -352,7 +351,7 @@ PrusaSlicer 3MF, broken 3MF, oversized uploads, and draft to publish.
 2. ~~**Size limits**~~: **decided 2026-10-30: as proposed** (§ 3).
 3. ~~**Sliced G-code inside 3MF files**~~: **decided 2026-10-30: dropped** (printers run it).
 4. ~~**ClamAV**~~: **decided 2026-10-30: later** (P2, #29).
-5. ~~**Licences**~~: **decided 2026-10-30: like Thingiverse's and Printables'** (§ 6). Still open:
+5. ~~**Licences**~~: **decided 2026-10-30: Creative Commons and open licences** (§ 6). Still open:
    the remix rules' confirmation, ideally by a lawyer, before launch.
 6. ~~**Ownership of imported files**~~: **decided 2026-10-30: the creator's confirmation and the
    takedown process** (§ 8); nothing fetched from other sites.
