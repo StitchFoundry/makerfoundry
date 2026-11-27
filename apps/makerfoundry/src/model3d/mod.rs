@@ -16,6 +16,7 @@ pub mod render;
 pub mod scad;
 pub mod search;
 pub mod showcase;
+pub mod slicer_link;
 pub mod social;
 pub mod step;
 pub mod stl;
