@@ -761,6 +761,7 @@ pub async fn manage_page(
     let listing = crate::listings::manage_html(d, id, has_profile, state.launched);
     let profiles = profiles_html(id, &profiles(pool, id).await, true);
     let remix = super::remix::manage_section(pool, id).await;
+    let print_settings = super::settings::load(pool, id).await.form_html(id);
     let add = format!(
         r#"<form method="post" action="/3d/{id}/files" enctype="multipart/form-data" class="form">
 <label>Add files <small>(another print profile as a 3MF, a STEP source, more parts…)</small><input type="file" name="files" multiple required></label>
@@ -775,7 +776,7 @@ pub async fn manage_page(
     private(
         &format!("{} · MakerFoundry", escape(title)),
         &format!(
-            r#"<section class="design"><h1>{title}</h1>{problem}{note}{listing}{remix}{profiles}{files}{add}{photos}{delete}<p><a href="/designs">Your designs</a></p></section>"#,
+            r#"<section class="design"><h1>{title}</h1>{problem}{note}{listing}{remix}{print_settings}{profiles}{files}{add}{photos}{delete}<p><a href="/designs">Your designs</a></p></section>"#,
             title = escape(title),
         ),
         true,

@@ -14350,3 +14350,56 @@ fn derivative_licences_for_crochet() {
     }
     assert!(!allows_derivatives(None));
 }
+
+#[tokio::test]
+async fn a_makers_print_settings_show_on_the_model_page_and_an_empty_note_is_hidden() {
+    let Some(s) = site_3d(Vec::new(), true).await else {
+        return;
+    };
+    let ann = model_maker(&s, "ann%40example.com", "ann").await;
+    let id = licensed_model(&s, &ann, "Vase", "cc-by").await;
+    let page = s.get(&format!("/d/{id}/vase"), None).await;
+    assert!(!page.body.contains("Print settings</h2><dl>"), "{}", page.body);
+    // a value out of range is refused and nothing is kept
+    let r = s
+        .post(
+            &format!("/3d/{id}/settings"),
+            "layer_height=99&material=PLA",
+            Some(&ann),
+        )
+        .await;
+    assert!(r.body.contains("Layer height should be"), "{}", r.body);
+    assert_eq!(
+        s.scalar("SELECT count(*) FROM mf_designs WHERE print_settings IS NOT NULL")
+            .await,
+        0
+    );
+    let r = s
+        .post(
+            &format!("/3d/{id}/settings"),
+            "material=PETG&nozzle=0.4&layer_height=0.2&infill=15&supports=yes&orientation=Flat+side+down",
+            Some(&ann),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER, "{}", r.body);
+    let page = s.get(&format!("/d/{id}/vase"), None).await;
+    for want in [
+        "Print settings",
+        "PETG",
+        "0.4 mm",
+        "0.2 mm",
+        "15%",
+        "Needed",
+        "Flat side down",
+    ] {
+        assert!(page.body.contains(want), "{want}: {}", page.body);
+    }
+    // someone else can't change it
+    let bob = model_maker(&s, "bob%40example.com", "bob").await;
+    let r = s.post(&format!("/3d/{id}/settings"), "material=ABS", Some(&bob)).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    // saving it empty clears it again
+    s.post(&format!("/3d/{id}/settings"), "material=", Some(&ann)).await;
+    let page = s.get(&format!("/d/{id}/vase"), None).await;
+    assert!(!page.body.contains("Print settings</h2><dl>"), "{}", page.body);
+}

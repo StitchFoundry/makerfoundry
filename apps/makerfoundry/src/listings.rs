@@ -971,9 +971,10 @@ async fn show(state: AppState, headers: HeaderMap, id: i64) -> Response {
         )
         .await;
         format!(
-            "{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}",
             crate::model3d::remix::section(pool, id).await,
             also_by(pool, d.account_id, maker.as_ref().map(|m| m.handle.as_str())).await,
+            crate::model3d::settings::load(pool, id).await.card_html(),
             crate::model3d::upload::profiles_html(id, &profiles, may_download),
             crate::model3d::scad::links_html(&state, id, &files, may_download),
             crate::model3d::upload::public_files_html(id, &files, may_download),

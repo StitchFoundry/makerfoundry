@@ -335,6 +335,7 @@ pub fn app(state: AppState) -> Router {
         .route("/3d/{id}/files/{file}/{view}", get(model3d::upload::picture))
         .route("/3d/import/{id}", get(model3d::import::review))
         .route("/3d/{id}/files/{file}/delete", post(model3d::upload::remove_file))
+        .route("/3d/{id}/settings", post(model3d::settings::save))
         .route("/3d/{id}/parents", post(model3d::remix::add_parent))
         .route("/3d/{id}/parents/{parent}/delete", post(model3d::remix::remove_parent))
         .route("/3d/{id}/tree", get(model3d::remix::tree))

@@ -15,6 +15,7 @@ pub mod remix;
 pub mod render;
 pub mod scad;
 pub mod search;
+pub mod settings;
 pub mod showcase;
 pub mod social;
 pub mod step;
