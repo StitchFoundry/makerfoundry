@@ -1727,6 +1727,8 @@ struct StripeFake {
     transfers: Vec<HashMap<String, String>>,
     /// Refunds made outside MakerFoundry (the Stripe Dashboard), as Stripe lists them.
     listed_refunds: Vec<Value>,
+    /// When set, making a Checkout Session waits for a permit (a checkout part-way through).
+    checkout_gate: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 type StripeShared = Arc<Mutex<StripeFake>>;
@@ -1783,6 +1785,10 @@ async fn fake_stripe() -> (makerfoundry::stripe::Stripe, StripeShared) {
             "/v1/checkout/sessions",
             post(move |State(s): State<StripeShared>, h: HeaderMap, Form(f): Form<HashMap<String, String>>| async move {
                 assert!(authorised(&h));
+                let gate = s.lock().unwrap().checkout_gate.clone();
+                if let Some(gate) = gate {
+                    gate.acquire().await.unwrap().forget();
+                }
                 let mut st = s.lock().unwrap();
                 let id = format!("cs_test_{}", st.sessions.len() + 1);
                 st.sessions.insert(id.clone(), (f.clone(), false));
@@ -13582,6 +13588,72 @@ async fn deleting_your_data_closes_checkouts_for_your_designs() {
         s.scalar(&format!("SELECT count(*) FROM mf_designs WHERE id = {id}"))
             .await,
         0
+    );
+}
+
+/// Issue #193: a design unpublished and deleted while a buyer's checkout is being made at Stripe
+/// never leaves that checkout payable; a data deletion meanwhile waits instead.
+#[tokio::test]
+async fn a_design_deleted_while_its_checkout_is_made_is_never_paid_for() {
+    let Some((s, st, seller, id)) = selling_site(Vec::new()).await else {
+        return;
+    };
+    let bea = s.sign_up("bea%40example.com").await;
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    st.lock().unwrap().checkout_gate = Some(gate.clone());
+    // the maker unpublishes and deletes while Stripe is making bea's checkout
+    let path = format!("/d/{id}/buy");
+    let buy = s.post(&path, "", Some(&bea));
+    let maker = async {
+        while s.scalar("SELECT count(*) FROM mf_orders").await == 0 {
+            tokio::task::yield_now().await;
+        }
+        s.post(&format!("/designs/{id}/unpublish"), "", Some(&seller)).await;
+        let r = s.post(&format!("/designs/{id}/delete"), "", Some(&seller)).await;
+        gate.add_permits(1);
+        r
+    };
+    let (r, deleted) = tokio::join!(buy, maker);
+    assert_eq!(deleted.location(), "/designs", "{}", deleted.body);
+    assert!(r.body.contains("isn't available to buy"), "{} {}", r.location(), r.body);
+    assert_eq!(st.lock().unwrap().expired, ["cs_test_1"]);
+    assert_eq!(
+        s.scalar("SELECT count(*) FROM mf_orders WHERE stripe_session = 'cs_test_1' AND status = 'expired'")
+            .await,
+        1
+    );
+
+    // deleting the maker's data while another design's checkout is being made: nothing is deleted
+    let other = published(&s, &seller, "sams-shop", "Owl+Patch").await;
+    let r = s
+        .post(
+            &format!("/designs/{other}/edit"),
+            "title=Owl+Patch&licence=personal&price=5",
+            Some(&seller),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER, "{}", r.body);
+    let path = format!("/d/{other}/buy");
+    let buy = s.post(&path, "", Some(&bea));
+    let maker = async {
+        while s
+            .scalar(&format!("SELECT count(*) FROM mf_orders WHERE design_id = {other}"))
+            .await
+            == 0
+        {
+            tokio::task::yield_now().await;
+        }
+        let r = s.post("/account/data/delete", "confirm=delete", Some(&seller)).await;
+        gate.add_permits(1);
+        r
+    };
+    let (r, deleted) = tokio::join!(buy, maker);
+    assert!(deleted.body.contains("Nothing was changed"), "{}", deleted.body);
+    assert!(r.location().ends_with("cs_test_2"), "{}", r.location());
+    assert_eq!(
+        s.scalar(&format!("SELECT count(*) FROM mf_designs WHERE id = {other}"))
+            .await,
+        1
     );
 }
 
