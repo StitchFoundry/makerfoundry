@@ -43,6 +43,11 @@ the owner sets it up ([`docs/deploy.md`](docs/deploy.md)). See [`docs/plan.md`](
 ## Develop
 - `cargo run -p makerfoundry`, then open <http://localhost:8080>.
 - `cargo xtask ci`: the checks every commit must pass (fmt, clippy `-D warnings`, tests, assets).
+- `docker build -t makerfoundry .`: the second CI job. `cargo xtask ci` does **not** run it, so run
+  both before every commit; agents and humans use the same two gates.
+- Progress is tracked in `docs/plan.md` (tasks) and the README Status. `PROGRESS.md` is the
+  rolled-up log: PRs add a `progress/<yyyy-mm-dd>-<issue-or-pr>.md` note instead of editing it
+  (see [`progress/README.md`](progress/README.md)).
 - The database tests need a Postgres they may make schemas in:
   `MF_TEST_DATABASE_URL=postgres://user:password@localhost/db cargo xtask ci` (CI has one; without
   it those tests are skipped).

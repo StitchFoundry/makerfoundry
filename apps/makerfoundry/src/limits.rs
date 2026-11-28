@@ -15,6 +15,17 @@ pub struct Rule {
     pub per: Duration,
 }
 
+impl Rule {
+    /// The rule with its `max` multiplied (staging only, `MF_RATE_LIMIT_MULTIPLIER`): the one
+    /// place a limit is relaxed. Saturates; a multiplier of 1 changes nothing.
+    pub const fn scaled(self, multiplier: usize) -> Rule {
+        Rule {
+            max: self.max.saturating_mul(multiplier),
+            ..self
+        }
+    }
+}
+
 const fn rule(name: &'static str, max: usize, minutes: u64) -> Rule {
     Rule {
         name,
@@ -70,9 +81,62 @@ pub const SCAD_RENDER: Rule = rule("scad-render", 30, 60);
 /// The most designs one account may keep.
 pub const MAX_DESIGNS: i64 = 500;
 
-#[derive(Default)]
+/// Every rule above (a test checks none is missing).
+pub const ALL: [Rule; 18] = [
+    SIGNUP,
+    SIGNIN,
+    FORGOT,
+    PREVIEW,
+    UPLOAD,
+    REPORT,
+    CONVERT,
+    OPEN,
+    COMMENT,
+    CHECKOUT,
+    PROOF_UPLOAD,
+    PROOF_REPLY,
+    FOUNDING,
+    MODEL_UPLOAD,
+    IMPORT,
+    LIKE,
+    API_READ,
+    SCAD_RENDER,
+];
+
+/// Reads `MF_RATE_LIMIT_MULTIPLIER`: a whole number from 1 to 100, else 1. Ignored (1) once
+/// `launched` (`MF_LAUNCHED=yes`), so production can't be relaxed. The text is the log line to
+/// print, if any.
+pub fn multiplier_from(setting: Option<&str>, launched: bool) -> (usize, Option<String>) {
+    let Some(raw) = setting.map(str::trim).filter(|v| !v.is_empty()) else {
+        return (1, None);
+    };
+    if launched {
+        return (
+            1,
+            Some("MF_RATE_LIMIT_MULTIPLIER is ignored once MF_LAUNCHED=yes: limits stay as they are".into()),
+        );
+    }
+    match raw.parse::<usize>() {
+        Ok(n) if (1..=100).contains(&n) => (
+            n,
+            (n > 1).then(|| format!("rate limits relaxed {n} times (MF_RATE_LIMIT_MULTIPLIER; staging only)")),
+        ),
+        _ => (
+            1,
+            Some("MF_RATE_LIMIT_MULTIPLIER must be a whole number from 1 to 100: using 1".into()),
+        ),
+    }
+}
+
 pub struct Limits {
     hits: Mutex<HashMap<(&'static str, String), VecDeque<Instant>>>,
+    multiplier: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self::with_multiplier(1)
+    }
 }
 
 impl std::fmt::Debug for Limits {
@@ -82,6 +146,14 @@ impl std::fmt::Debug for Limits {
 }
 
 impl Limits {
+    /// Limits whose every rule allows `multiplier` times as many (at least 1).
+    pub fn with_multiplier(multiplier: usize) -> Limits {
+        Limits {
+            hits: Mutex::default(),
+            multiplier: multiplier.max(1),
+        }
+    }
+
     /// Counts one more for `key` under `rule`: `true` if it's allowed, `false` if over the limit
     /// (and then it isn't counted).
     pub fn allow(&self, rule: Rule, key: &str) -> bool {
@@ -100,6 +172,7 @@ impl Limits {
     }
 
     fn allow_at(&self, rule: Rule, key: &str, now: Instant) -> bool {
+        let rule = rule.scaled(self.multiplier);
         // (a panic elsewhere while holding the lock leaves only counts behind: carry on)
         let mut hits = self.hits.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if hits.len() > 100_000 {
@@ -171,6 +244,59 @@ mod tests {
         // a day later, nothing of either address is kept
         limits.sweep_at(t0 + Duration::from_secs(61) + UPLOAD.per);
         assert!(limits.hits.lock().unwrap().is_empty());
+    }
+
+    fn signups(limits: &Limits, n: u64) -> Vec<bool> {
+        let t0 = Instant::now();
+        (0..n)
+            .map(|i| limits.allow_at(SIGNUP, "a", t0 + Duration::from_secs(i)))
+            .collect()
+    }
+
+    #[test]
+    fn by_default_the_eleventh_signup_an_hour_is_refused() {
+        let got = signups(&Limits::default(), 11);
+        assert!(got[..10].iter().all(|ok| *ok));
+        assert!(!got[10]);
+    }
+
+    #[test]
+    fn a_multiplier_of_five_allows_fifty_signups() {
+        let got = signups(&Limits::with_multiplier(5), 51);
+        assert!(got[..50].iter().all(|ok| *ok), "the 11th to 50th are allowed");
+        assert!(!got[50], "the 51st is refused");
+    }
+
+    #[test]
+    fn the_setting_is_read_safely() {
+        assert_eq!(multiplier_from(None, false), (1, None));
+        assert_eq!(multiplier_from(Some("  "), false), (1, None));
+        assert_eq!(multiplier_from(Some("20"), false).0, 20);
+        assert_eq!(multiplier_from(Some("100"), false).0, 100);
+        for bad in ["0", "101", "-3", "2.5", "many", "99999999999999999999999"] {
+            let (n, why) = multiplier_from(Some(bad), false);
+            assert_eq!(n, 1, "{bad}");
+            assert!(why.is_some(), "{bad} is logged");
+        }
+        let (n, why) = multiplier_from(Some("20"), true);
+        assert_eq!(n, 1, "ignored once launched");
+        assert!(why.is_some());
+    }
+
+    #[test]
+    fn the_multiplier_reaches_every_rule() {
+        let source = include_str!("limits.rs");
+        let rules = source
+            .lines()
+            .filter(|l| l.starts_with("pub const ") && l.contains(": Rule ="))
+            .count();
+        assert_eq!(ALL.len(), rules, "ALL lists every rule");
+        for r in ALL {
+            assert_eq!(r.scaled(1).max, r.max, "{}", r.name);
+            assert_eq!(r.scaled(7).max, r.max * 7, "{}", r.name);
+            assert_eq!(r.scaled(7).per, r.per, "{}", r.name);
+        }
+        assert_eq!(rule("x", usize::MAX, 1).scaled(100).max, usize::MAX);
     }
 
     #[test]
