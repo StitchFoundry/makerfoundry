@@ -776,6 +776,17 @@ async fn buy_locked(
         if let Err(e) = &session {
             eprintln!("selling: checkout for order {order}: {e}");
         }
+        // no checkout to keep (and none can be paid: payment needs its session saved here), so
+        // the order isn't left waiting, where it would stop the maker's data deletion for a day
+        if let Err(e) = sqlx::query(
+            "UPDATE mf_orders SET status = 'expired' WHERE id = $1 AND status = 'pending' AND stripe_session IS NULL",
+        )
+        .bind(order)
+        .execute(pool)
+        .await
+        {
+            eprintln!("selling: order {order}: {e}");
+        }
         return problem_page(
             "Buy a design",
             "Stripe can't be reached just now. Please try again in a few minutes.",

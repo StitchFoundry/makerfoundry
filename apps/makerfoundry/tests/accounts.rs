@@ -1729,6 +1729,8 @@ struct StripeFake {
     listed_refunds: Vec<Value>,
     /// When set, making a Checkout Session waits for a permit (a checkout part-way through).
     checkout_gate: Option<Arc<tokio::sync::Semaphore>>,
+    /// Whether making a Checkout Session fails (Stripe having a bad moment).
+    checkouts_fail: bool,
 }
 
 type StripeShared = Arc<Mutex<StripeFake>>;
@@ -1790,10 +1792,16 @@ async fn fake_stripe() -> (makerfoundry::stripe::Stripe, StripeShared) {
                     gate.acquire().await.unwrap().forget();
                 }
                 let mut st = s.lock().unwrap();
+                if st.checkouts_fail {
+                    return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": {"message": "try again"}})));
+                }
                 let id = format!("cs_test_{}", st.sessions.len() + 1);
                 st.sessions.insert(id.clone(), (f.clone(), false));
                 st.posts.push(("/v1/checkout/sessions".into(), f));
-                Json(json!({"id": id, "url": format!("https://checkout.stripe.com/c/pay/{id}"), "payment_status": "unpaid"}))
+                (
+                    StatusCode::OK,
+                    Json(json!({"id": id, "url": format!("https://checkout.stripe.com/c/pay/{id}"), "payment_status": "unpaid"})),
+                )
             }),
         )
         .route(
@@ -13584,6 +13592,31 @@ async fn deleting_your_data_closes_checkouts_for_your_designs() {
     let r = s.post("/account/data/delete", "confirm=delete", Some(&seller)).await;
     assert!(r.body.contains("Your MakerFoundry data is deleted"), "{}", r.body);
     assert_eq!(st.lock().unwrap().expired, ["cs_test_1"]);
+    assert_eq!(
+        s.scalar(&format!("SELECT count(*) FROM mf_designs WHERE id = {id}"))
+            .await,
+        0
+    );
+}
+
+/// A Buy that Stripe couldn't make a checkout for leaves no order waiting, so it doesn't stop the
+/// maker's data deletion (it used to, for a day, until the order expired).
+#[tokio::test]
+async fn a_checkout_stripe_couldnt_make_doesnt_stop_a_data_deletion() {
+    let Some((s, st, seller, id)) = selling_site(Vec::new()).await else {
+        return;
+    };
+    let bea = s.sign_up("bea%40example.com").await;
+    st.lock().unwrap().checkouts_fail = true;
+    let r = s.post(&format!("/d/{id}/buy"), "", Some(&bea)).await;
+    assert!(r.body.contains("Stripe can't be reached"), "{}", r.body);
+    assert_eq!(
+        s.scalar("SELECT count(*) FROM mf_orders WHERE status = 'pending'")
+            .await,
+        0
+    );
+    let r = s.post("/account/data/delete", "confirm=delete", Some(&seller)).await;
+    assert!(r.body.contains("Your MakerFoundry data is deleted"), "{}", r.body);
     assert_eq!(
         s.scalar(&format!("SELECT count(*) FROM mf_designs WHERE id = {id}"))
             .await,
